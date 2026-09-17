@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.production.example
+server/logs
+logs
+.git
+.gitignore
+*.md
+run_app.ps1
+.commandcode

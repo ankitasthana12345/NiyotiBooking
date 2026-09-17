@@ -1,0 +1,78 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --admin-bg: #f9f2f5;
+  --admin-surface: #ffffff;
+  --admin-line: #f1d9e2;
+  --admin-ink: #1f2937;
+  --admin-muted: #6b7280;
+  --admin-brand: #f59e0b;
+}
+
+body {
+  background: radial-gradient(circle at 10% 0%, #ffe9f1 0%, rgba(255, 233, 241, 0) 35%), var(--admin-bg);
+  color: var(--admin-ink);
+  font-family: "Manrope", sans-serif;
+}
+
+.navbar-brand {
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.card {
+  border: 1px solid var(--admin-line);
+  border-radius: 1rem;
+  background: var(--admin-surface);
+  box-shadow: 0 10px 24px rgba(120, 56, 88, 0.09);
+}
+
+.metric-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+}
+
+.table thead th {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: var(--admin-muted);
+}
+
+.btn-primary {
+  background: var(--admin-brand);
+  border-color: var(--admin-brand);
+  color: #111827;
+  font-weight: 700;
+}
+
+.btn-primary:hover,
+.btn-primary:focus {
+  background: #f97316;
+  border-color: #f97316;
+  color: #fff;
+}
+
+.btn-outline-primary {
+  border-color: var(--admin-brand);
+  color: #b45309;
+  font-weight: 700;
+}
+
+.btn-outline-primary:hover,
+.btn-outline-primary:focus {
+  background: var(--admin-brand);
+  border-color: var(--admin-brand);
+  color: #111827;
+}
+
+.form-control,
+.form-select {
+  border-color: #f3dce4;
+  border-radius: 0.7rem;
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--admin-brand);
+  box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.2);
+}

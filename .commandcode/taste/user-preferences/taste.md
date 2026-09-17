@@ -1,0 +1,22 @@
+# User Preferences
+- Uses CSP-safe event handling: data-action/data-id attributes with delegated event listeners instead of inline onclick handlers (required by Helmet CSP). Confidence: 0.95
+- Prefers 12-hour (AM/PM) time format for user-facing displays. Confidence: 0.9
+- Implements Bootstrap components manually in JavaScript rather than using data-bs-* attributes or Bootstrap JS bundle. Confidence: 0.9
+- Extracts shared utility functions into separate files (e.g., format-utils.js for time formatting and alerts). Confidence: 0.85
+- Uses manual click-to-notify links (wa.me, mailto, tel, sms) rather than automated notification sending. Confidence: 0.95
+- Implements debounced search/filter inputs (around 350ms delay). Confidence: 0.8
+- Conditionally renders UI elements based on entity state (e.g., hide delete button for booked slots). Confidence: 0.9
+- Tests features end-to-end before considering them complete, including creating test data to verify behavior. Confidence: 0.95
+- Runs syntax checks (node --check) before restarting server. Confidence: 0.9
+- Uses temporary Node scripts for live database migrations (run once then delete). Confidence: 0.9
+- Verifies image/UI changes visually before finalizing. Confidence: 0.85
+- Asks clarifying questions when requirements are ambiguous rather than guessing on consequential decisions. Confidence: 0.95
+- Cleans up test data responsibly (checks for foreign key references before deleting). Confidence: 0.9
+- Uses PowerShell for server management, API testing, and image processing (.NET System.Drawing). Confidence: 0.9
+- Prefers session-based authentication with middleware (requireAuth/requireAdmin). Confidence: 0.85
+- Uses Helmet for security headers with CSP-safe coding patterns. Confidence: 0.9
+- Node.js/Express with MSSQL/LocalDB database. Confidence: 0.95
+- Bootstrap 5.3.3 via CDN. Confidence: 0.9
+- IST (UTC+5:30) timezone handling with specific server-side and client-side patterns. Confidence: 0.9
+- Provides short confirmations ("Yes", "okay", "No") and expects careful interpretation of unclear requirements. Confidence: 0.9
+- Appreciates clear, definitive explanations of technical constraints (what is/isn't feasible) rather than guesses. Confidence: 0.95

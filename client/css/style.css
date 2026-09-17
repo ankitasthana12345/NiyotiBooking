@@ -1,0 +1,92 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --page-bg: #f8f1f4;
+  --surface: #ffffff;
+  --surface-soft: #fff8fb;
+  --ink: #1f2430;
+  --muted: #6b7280;
+  --line: #f1d9e2;
+  --brand: #f59e0b;
+  --brand-ink: #7a4200;
+  --accent: #f97316;
+  --success: #15803d;
+}
+
+body {
+  background: radial-gradient(circle at 0% 0%, #ffeaf1 0%, rgba(255, 234, 241, 0) 42%), var(--page-bg);
+  color: var(--ink);
+  font-family: "Manrope", sans-serif;
+  letter-spacing: 0.01em;
+}
+
+.hero {
+  background: linear-gradient(135deg, #ffffff 0%, #fff3f7 50%, #fff7ed 100%);
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(119, 57, 84, 0.08);
+}
+
+.fc .fc-daygrid-day.fc-day-has-event {
+  background: #fffbeb;
+}
+
+.slot-btn.active {
+  background: var(--brand);
+  color: #111827;
+  border-color: var(--brand);
+}
+
+.btn-primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #111827;
+  font-weight: 700;
+}
+
+.btn-primary:hover,
+.btn-primary:focus {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-outline-primary {
+  border-color: #f59e0b;
+  color: #b45309;
+  font-weight: 700;
+}
+
+.btn-outline-primary:hover,
+.btn-outline-primary:focus {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #111827;
+}
+
+.form-control,
+.form-select {
+  border-color: #f3dce4;
+  border-radius: 0.7rem;
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.2);
+}
+
+.badge-status {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.text-muted {
+  color: var(--muted) !important;
+}

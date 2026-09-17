@@ -1,0 +1,16 @@
+# Reverse proxy in front of all three apps on the VPS, with automatic HTTPS
+# (Let's Encrypt) handled by Caddy itself — no certbot/nginx config needed.
+# Point each hostname's DNS A record at the VPS IP before starting Caddy.
+
+niyotishrivastava.com, www.niyotishrivastava.com {
+    reverse_proxy localhost:3000
+}
+
+# Replace with the real subdomains once the other two apps are ready.
+# app2.niyotishrivastava.com {
+#     reverse_proxy localhost:3001
+# }
+#
+# site.niyotishrivastava.com {
+#     reverse_proxy localhost:3002
+# }

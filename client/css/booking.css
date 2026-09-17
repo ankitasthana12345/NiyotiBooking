@@ -1,0 +1,85 @@
+#slotContainer .btn {
+  min-width: 120px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+#bookingFeedback .alert {
+  margin-bottom: 0;
+  border-radius: 0.8rem;
+}
+
+#bookingCalendar {
+  background: #fff;
+  border: 1px solid #f1d9e2;
+  border-radius: 0.8rem;
+  padding: 0.6rem;
+}
+
+.fc .fc-toolbar-title {
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+
+.fc .fc-button-primary {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #111827;
+}
+
+.fc .fc-button-primary:hover,
+.fc .fc-button-primary:focus {
+  background: #f97316;
+  border-color: #f97316;
+  color: #fff;
+}
+
+/* Booking page — royal blue to purple gradient */
+.booking-hero {
+  position: relative;
+  overflow: hidden;
+  color: #ffffff;
+  --g1: #4169E1; /* royal blue */
+  --g2: #7B2FF7; /* purple */
+  background: linear-gradient(135deg, var(--g1) 0%, var(--g2) 100%);
+  background-size: 200% 200%;
+  animation: gradientShift 12s ease infinite;
+}
+
+.booking-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0.12), rgba(0,0,0,0.28));
+  pointer-events: none;
+  z-index: 0;
+}
+
+.booking-hero .container {
+  position: relative;
+  z-index: 1;
+}
+
+.booking-hero h1,
+.booking-hero p,
+.booking-hero .lead {
+  text-shadow: 0 2px 6px rgba(0,0,0,0.45);
+}
+
+.booking-hero .btn {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.22);
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(11,12,22,0.18);
+}
+
+.booking-hero a.btn.btn-light {
+  background: rgba(255,255,255,0.18);
+  color: #ffffff;
+}
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
