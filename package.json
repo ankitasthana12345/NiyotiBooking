@@ -4,6 +4,7 @@
   "description": "Production-ready consultation and appointment booking system",
   "main": "server/server.js",
   "scripts": {
+    "build": "echo build",
     "start": "node server/server.js",
     "dev": "node server/server.js",
     "create-admin": "node server/utils/createAdmin.js",
