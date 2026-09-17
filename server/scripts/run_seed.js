@@ -3,25 +3,45 @@ dotenv.config();
 
 const fs = require('fs');
 const path = require('path');
-const { getPool, closePool } = require('../config/db');
+const mysql = require('mysql2/promise');
+
+function parseBool(value, fallback = false) {
+  if (value === undefined) return fallback;
+  return String(value).toLowerCase() === 'true';
+}
 
 async function run() {
+  let connection;
   try {
     const file = path.resolve(__dirname, '..', 'sql', 'seed_test_data.sql');
     const sqlText = fs.readFileSync(file, 'utf8');
 
-    const pool = await getPool();
+    connection = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT || 3306),
+      database: process.env.DB_DATABASE,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      ssl: parseBool(process.env.DB_SSL, false) ? { rejectUnauthorized: false } : undefined,
+      multipleStatements: true,
+    });
     console.log('Connected to DB, running seed script...');
 
-    const result = await pool.query(sqlText);
-    const results = Array.isArray(result) ? result : [result];
-    const totalRows = results.reduce((sum, r) => sum + (r.rowCount || 0), 0);
+    const [results] = await connection.query(sqlText);
+    const resultArray = Array.isArray(results) ? results : [results];
+    const totalRows = resultArray.reduce((sum, r) => sum + (r && r.affectedRows ? r.affectedRows : 0), 0);
     console.log(`Seed script completed. Rows affected: ${totalRows}`);
   } catch (err) {
     console.error('Seed script failed:', err.message);
     process.exitCode = 1;
   } finally {
-    try { await closePool(); } catch (e) {}
+    if (connection) {
+      try {
+        await connection.end();
+      } catch (e) {
+        // ignore
+      }
+    }
   }
 }
 

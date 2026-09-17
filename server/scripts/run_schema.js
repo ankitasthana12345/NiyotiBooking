@@ -3,7 +3,7 @@ dotenv.config();
 
 const fs = require('fs');
 const path = require('path');
-const { Client } = require('pg');
+const mysql = require('mysql2/promise');
 
 function parseBool(value, fallback = false) {
   if (value === undefined) return fallback;
@@ -13,10 +13,11 @@ function parseBool(value, fallback = false) {
 function baseConfig() {
   return {
     host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || 5432),
+    port: Number(process.env.DB_PORT || 3306),
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    ssl: parseBool(process.env.DB_SSL, false) ? { rejectUnauthorized: false } : false,
+    ssl: parseBool(process.env.DB_SSL, false) ? { rejectUnauthorized: false } : undefined,
+    multipleStatements: true,
   };
 }
 
@@ -25,20 +26,12 @@ async function ensureDatabaseExists(databaseName) {
     throw new Error(`Refusing to use unsafe database name: ${databaseName}`);
   }
 
-  // CREATE DATABASE can't run inside a transaction, so this connects to the
-  // `postgres` maintenance database first, separately from the target DB.
-  const client = new Client({ ...baseConfig(), database: 'postgres' });
-  await client.connect();
+  const connection = await mysql.createConnection(baseConfig());
   try {
-    const { rows } = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [databaseName]);
-    if (rows.length === 0) {
-      console.log(`Database "${databaseName}" does not exist, creating it...`);
-      await client.query(`CREATE DATABASE "${databaseName}"`);
-    } else {
-      console.log(`Database "${databaseName}" already exists.`);
-    }
+    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${databaseName}\``);
+    console.log(`Database "${databaseName}" is ready.`);
   } finally {
-    await client.end();
+    await connection.end();
   }
 }
 
@@ -56,14 +49,13 @@ async function run() {
     const file = path.resolve(__dirname, '..', 'sql', 'database.sql');
     const sqlText = fs.readFileSync(file, 'utf8');
 
-    const client = new Client({ ...baseConfig(), database: databaseName });
-    await client.connect();
+    const connection = await mysql.createConnection({ ...baseConfig(), database: databaseName });
     console.log(`Connected to "${databaseName}", applying schema...`);
     try {
-      await client.query(sqlText);
+      await connection.query(sqlText);
       console.log('Schema applied successfully.');
     } finally {
-      await client.end();
+      await connection.end();
     }
   } catch (err) {
     console.error('Schema script failed:', err.message);

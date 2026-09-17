@@ -107,7 +107,7 @@ const resetPassword = asyncHandler(async (req, res) => {
      FROM "PasswordResetTokens"
      WHERE "ResetToken" = $1
        AND "Used" = FALSE
-       AND "ExpiryDate" > (now() AT TIME ZONE 'UTC')
+       AND "ExpiryDate" > UTC_TIMESTAMP()
      ORDER BY "CreatedDate" DESC
      LIMIT 1`,
     [hashedToken]
@@ -127,7 +127,7 @@ const resetPassword = asyncHandler(async (req, res) => {
     await client.query(
       `UPDATE "AdminUsers"
        SET "PasswordHash" = $1,
-           "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+           "UpdatedDate" = UTC_TIMESTAMP()
        WHERE "AdminId" = $2`,
       [passwordHash, resetRow.AdminId]
     );

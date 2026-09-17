@@ -149,7 +149,7 @@ const updateEvent = asyncHandler(async (req, res) => {
        "RequiresApproval" = $11,
        "NotificationEmail" = $12,
        "IsActive" = $13,
-       "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+       "UpdatedDate" = UTC_TIMESTAMP()
      WHERE "EventId" = $14`,
     [
       title,

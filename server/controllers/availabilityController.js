@@ -369,7 +369,7 @@ const updateAvailability = asyncHandler(async (req, res) => {
        "MeetingPlatform" = $7,
        "MeetingLink" = $8,
        "Status" = $9,
-       "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+       "UpdatedDate" = UTC_TIMESTAMP()
      WHERE "AvailabilityId" = $10`,
     [
       availableDate,
@@ -414,7 +414,7 @@ const deleteAvailability = asyncHandler(async (req, res) => {
     }
 
     const disableResult = await pool.query(
-      `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+      `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = UTC_TIMESTAMP() WHERE "AvailabilityId" = $1`,
       [id]
     );
 
@@ -434,7 +434,7 @@ const enableAvailability = asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const pool = await getPool();
   const result = await pool.query(
-    `UPDATE "Availability" SET "Status" = 'ENABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+    `UPDATE "Availability" SET "Status" = 'ENABLED', "UpdatedDate" = UTC_TIMESTAMP() WHERE "AvailabilityId" = $1`,
     [id]
   );
 
@@ -449,7 +449,7 @@ const disableAvailability = asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const pool = await getPool();
   const result = await pool.query(
-    `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+    `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = UTC_TIMESTAMP() WHERE "AvailabilityId" = $1`,
     [id]
   );
 
@@ -480,7 +480,7 @@ const updateBookingSettings = asyncHandler(async (req, res) => {
   const pool = await getPool();
   await pool.query(
     `UPDATE "BookingSettings"
-     SET "MinimumNoticeHours" = $1, "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+     SET "MinimumNoticeHours" = $1, "UpdatedDate" = UTC_TIMESTAMP()
      WHERE "SettingId" = 1`,
     [Number(minimumNoticeHours)]
   );
@@ -510,11 +510,11 @@ const listPublicAvailability = asyncHandler(async (req, res) => {
       WHERE av."EventId" = $1
         AND av."Status" = 'ENABLED'
         AND e."IsActive" = TRUE
-        AND (av."AvailableDate" + av."StartTime") > (
-          (now() AT TIME ZONE 'Asia/Kolkata')
-          + ((SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1) * INTERVAL '1 hour')
+        AND TIMESTAMP(av."AvailableDate", av."StartTime") > DATE_ADD(
+          DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE),
+          INTERVAL (SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1) HOUR
         )
-        AND av."AvailableDate" <= ((now() AT TIME ZONE 'Asia/Kolkata') + INTERVAL '14 days')::date
+        AND av."AvailableDate" <= DATE(DATE_ADD(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL 14 DAY))
         AND NOT EXISTS (
           SELECT 1
           FROM "Bookings" b

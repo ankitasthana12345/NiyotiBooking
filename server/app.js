@@ -21,6 +21,11 @@ const { successResponse } = require("./utils/apiResponse");
 
 const app = express();
 
+// GoDaddy's PaaS runs the app behind a reverse proxy that sets X-Forwarded-For.
+// Without this, express-rate-limit throws on that header (ERR_ERL_UNEXPECTED_X_FORWARDED_FOR)
+// and secure cookies can't detect HTTPS correctly.
+app.set("trust proxy", 1);
+
 function parseBool(value, fallback = false) {
   if (value === undefined) return fallback;
   return String(value).toLowerCase() === "true";
@@ -105,8 +110,8 @@ app.get("/api/admin/dashboard", requireAuth, requireAdmin, async (req, res, next
     const result = await pool.query(`
       SELECT
         (SELECT COUNT(*) FROM "Bookings") AS "TotalBookings",
-        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" = ((now() AT TIME ZONE 'Asia/Kolkata')::date)) AS "TodaysBookings",
-        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" >= ((now() AT TIME ZONE 'Asia/Kolkata')::date) AND "Status" IN ('PENDING','CONFIRMED','RESCHEDULED')) AS "UpcomingBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" = (DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE)))) AS "TodaysBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" >= (DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE))) AND "Status" IN ('PENDING','CONFIRMED','RESCHEDULED')) AS "UpcomingBookings",
         (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'CANCELLED') AS "CancelledBookings",
         (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'REJECTED') AS "RejectedBookings",
         (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'RESCHEDULED') AS "RescheduledBookings"

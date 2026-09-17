@@ -58,8 +58,8 @@ async function createPublicBooking({
           av."AvailableDate", av."StartTime", av."EndTime", av."Status" AS "SlotStatus",
           av."MeetingPlatform", av."MeetingLink",
           ce."RequiresApproval", ce."IsActive" AS "IsEventActive",
-          (av."AvailableDate" + av."StartTime") <= (
-            (now() AT TIME ZONE 'Asia/Kolkata') + ($3 * INTERVAL '1 hour')
+          TIMESTAMP(av."AvailableDate", av."StartTime") <= DATE_ADD(
+            DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL $3 HOUR
           ) AS "NoticeViolated"
         FROM "Availability" av
         INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
@@ -135,7 +135,7 @@ async function updateBookingStatus({ bookingId, status }) {
   await pool.query(
     `UPDATE "Bookings"
      SET "Status" = $1,
-         "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+         "UpdatedDate" = UTC_TIMESTAMP()
      WHERE "BookingId" = $2`,
     [status, bookingId]
   );
@@ -203,7 +203,7 @@ async function rescheduleBooking({ bookingId, newAvailabilityId }) {
            "MeetingPlatform" = $5,
            "MeetingLink" = $6,
            "Status" = 'RESCHEDULED',
-           "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+           "UpdatedDate" = UTC_TIMESTAMP()
        WHERE "BookingId" = $7`,
       [slot.AvailabilityId, slot.AvailableDate, slot.StartTime, slot.EndTime, slot.MeetingPlatform, slot.MeetingLink, bookingId]
     );
