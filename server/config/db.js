@@ -1,5 +1,15 @@
-const sql = (process.env.DB_DRIVER || "tedious") === "msnodesqlv8" ? require("mssql/msnodesqlv8") : require("mssql");
+const { Pool, types } = require("pg");
 const logger = require("./logger");
+
+// Keep DATE columns as raw "YYYY-MM-DD" strings (pg defaults to parsing them into
+// JS Date objects, which breaks the manual string-split date formatting in
+// emailService.js — see the comments there around formatDateLong).
+types.setTypeParser(1082, (value) => value);
+// BIGINT columns default to strings to avoid precision loss; this app's IDs are
+// well within safe-integer range and callers expect numbers.
+types.setTypeParser(20, (value) => parseInt(value, 10));
+// NUMERIC (Price) defaults to a string for the same reason; callers expect a number.
+types.setTypeParser(1700, (value) => parseFloat(value));
 
 let poolPromise;
 
@@ -9,40 +19,18 @@ function parseBool(value, fallback = false) {
 }
 
 function getDbConfig() {
-  const driver = process.env.DB_DRIVER || "tedious";
   const connectionTimeout = Number(process.env.DB_TIMEOUT_MS || 8000);
 
-  if (driver === "msnodesqlv8") {
-    return {
-      driver: "msnodesqlv8",
-      connectionString: process.env.DB_CONNECTION_STRING,
-      connectionTimeout,
-      options: {
-        trustedConnection: true,
-        encrypt: parseBool(process.env.DB_ENCRYPT, true),
-        trustServerCertificate: parseBool(process.env.DB_TRUST_SERVER_CERTIFICATE, true),
-      },
-    };
-  }
-
   return {
-    server: process.env.DB_SERVER,
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT || 5432),
     database: process.env.DB_DATABASE,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    port: Number(process.env.DB_PORT || 1433),
-    connectionTimeout,
-    requestTimeout: connectionTimeout,
-    options: {
-      encrypt: parseBool(process.env.DB_ENCRYPT, true),
-      trustServerCertificate: parseBool(process.env.DB_TRUST_SERVER_CERTIFICATE, true),
-      enableArithAbort: true,
-    },
-    pool: {
-      max: 20,
-      min: 0,
-      idleTimeoutMillis: 30000,
-    },
+    connectionTimeoutMillis: connectionTimeout,
+    ssl: parseBool(process.env.DB_SSL, false) ? { rejectUnauthorized: false } : false,
+    max: 20,
+    idleTimeoutMillis: 30000,
   };
 }
 
@@ -51,17 +39,16 @@ async function getPool() {
     const config = getDbConfig();
     const timeoutMs = Number(process.env.DB_TIMEOUT_MS || 8000);
 
-    if (config.driver === "msnodesqlv8" && !config.connectionString) {
-      throw new Error("Database configuration is incomplete. Check environment variables.");
+    const required = ["DB_HOST", "DB_DATABASE", "DB_USER", "DB_PASSWORD"];
+    const missing = required.filter((key) => !process.env[key]);
+    if (missing.length > 0) {
+      throw new Error(`Missing required DB environment variables: ${missing.join(", ")}`);
     }
 
-    if (config.driver !== "msnodesqlv8") {
-      const required = ["DB_SERVER", "DB_DATABASE", "DB_USER", "DB_PASSWORD"];
-      const missing = required.filter((key) => !process.env[key]);
-      if (missing.length > 0) {
-        throw new Error(`Missing required DB environment variables: ${missing.join(", ")}`);
-      }
-    }
+    const pool = new Pool(config);
+    pool.on("error", (err) => {
+      logger.error("Unexpected database pool error", { message: err.message });
+    });
 
     let timeoutHandle;
     const connectionAttempt = new Promise((resolve, reject) => {
@@ -69,15 +56,17 @@ async function getPool() {
         reject(new Error(`Database connection timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      const connectPromise = new sql.ConnectionPool(config).connect();
-      connectPromise.then(resolve).catch(reject);
+      pool
+        .query("SELECT 1")
+        .then(() => resolve(pool))
+        .catch(reject);
     });
 
     poolPromise = connectionAttempt
-      .then((pool) => {
+      .then((connectedPool) => {
         clearTimeout(timeoutHandle);
         logger.info("Database connection established");
-        return pool;
+        return connectedPool;
       })
       .catch((err) => {
         clearTimeout(timeoutHandle);
@@ -93,13 +82,12 @@ async function getPool() {
 async function closePool() {
   if (poolPromise) {
     const pool = await poolPromise;
-    await pool.close();
+    await pool.end();
     poolPromise = undefined;
   }
 }
 
 module.exports = {
-  sql,
   getPool,
   closePool,
 };

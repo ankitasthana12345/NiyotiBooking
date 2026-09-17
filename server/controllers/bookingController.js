@@ -1,4 +1,4 @@
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 const asyncHandler = require("../utils/asyncHandler");
 const { successResponse, errorResponse } = require("../utils/apiResponse");
 const {
@@ -41,63 +41,63 @@ const listBookings = asyncHandler(async (req, res) => {
 
   let query = `
     SELECT
-      b.BookingId,
-      b.BookingReference,
-      b.EventId,
-      e.Title,
-      b.AvailabilityId,
-      b.CustomerName,
-      b.CustomerEmail,
-      b.PhoneNumber,
-      b.Message,
-      CONVERT(VARCHAR(10), b.BookingDate, 23) AS BookingDate,
-      CONVERT(VARCHAR(8), b.StartTime, 108) AS StartTime,
-      CONVERT(VARCHAR(8), b.EndTime, 108) AS EndTime,
-      b.MeetingPlatform,
-      b.MeetingLink,
-      b.Status,
-      b.CreatedDate
-    FROM dbo.Bookings b
-    INNER JOIN dbo.ConsultationEvents e ON e.EventId = b.EventId
+      b."BookingId",
+      b."BookingReference",
+      b."EventId",
+      e."Title",
+      b."AvailabilityId",
+      b."CustomerName",
+      b."CustomerEmail",
+      b."PhoneNumber",
+      b."Message",
+      b."BookingDate",
+      b."StartTime",
+      b."EndTime",
+      b."MeetingPlatform",
+      b."MeetingLink",
+      b."Status",
+      b."CreatedDate"
+    FROM "Bookings" b
+    INNER JOIN "ConsultationEvents" e ON e."EventId" = b."EventId"
     WHERE 1=1
   `;
 
-  const request = pool.request();
+  const params = [];
 
   if (status) {
-    query += " AND b.Status = @status ";
-    request.input("status", sql.NVarChar(20), status);
+    params.push(status);
+    query += ` AND b."Status" = $${params.length} `;
   }
 
   if (email) {
-    query += " AND b.CustomerEmail = @email ";
-    request.input("email", sql.NVarChar(255), email);
+    params.push(email);
+    query += ` AND b."CustomerEmail" = $${params.length} `;
   }
 
   if (eventId) {
-    query += " AND b.EventId = @eventId ";
-    request.input("eventId", sql.Int, Number(eventId));
+    params.push(Number(eventId));
+    query += ` AND b."EventId" = $${params.length} `;
   }
 
   if (fromDate) {
-    query += " AND b.BookingDate >= @fromDate ";
-    request.input("fromDate", sql.Date, fromDate);
+    params.push(fromDate);
+    query += ` AND b."BookingDate" >= $${params.length} `;
   }
 
   if (toDate) {
-    query += " AND b.BookingDate <= @toDate ";
-    request.input("toDate", sql.Date, toDate);
+    params.push(toDate);
+    query += ` AND b."BookingDate" <= $${params.length} `;
   }
 
   if (q) {
-    query += " AND (b.CustomerName LIKE @q OR b.CustomerEmail LIKE @q OR b.PhoneNumber LIKE @q) ";
-    request.input("q", sql.NVarChar(255), `%${q}%`);
+    params.push(`%${q}%`);
+    query += ` AND (b."CustomerName" LIKE $${params.length} OR b."CustomerEmail" LIKE $${params.length} OR b."PhoneNumber" LIKE $${params.length}) `;
   }
 
-  query += " ORDER BY b.BookingDate DESC, b.StartTime DESC ";
+  query += ' ORDER BY b."BookingDate" DESC, b."StartTime" DESC ';
 
-  const result = await request.query(query);
-  return successResponse(res, "Bookings fetched", { bookings: result.recordset });
+  const result = await pool.query(query, params);
+  return successResponse(res, "Bookings fetched", { bookings: result.rows });
 });
 
 const getBooking = asyncHandler(async (req, res) => {
@@ -198,12 +198,9 @@ const deleteBooking = asyncHandler(async (req, res) => {
   const bookingId = Number(req.params.id);
   const pool = await getPool();
 
-  const result = await pool
-    .request()
-    .input("bookingId", sql.BigInt, bookingId)
-    .query("DELETE FROM dbo.Bookings WHERE BookingId = @bookingId");
+  const result = await pool.query('DELETE FROM "Bookings" WHERE "BookingId" = $1', [bookingId]);
 
-  if (result.rowsAffected[0] === 0) {
+  if (result.rowCount === 0) {
     return errorResponse(res, "Booking not found", "BOOKING_NOT_FOUND", 404);
   }
 

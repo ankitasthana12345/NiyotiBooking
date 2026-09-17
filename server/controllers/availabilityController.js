@@ -1,4 +1,4 @@
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 const asyncHandler = require("../utils/asyncHandler");
 const { successResponse, errorResponse } = require("../utils/apiResponse");
 
@@ -20,36 +20,36 @@ const listAvailability = asyncHandler(async (req, res) => {
   const pool = await getPool();
   const eventId = req.query.eventId ? Number(req.query.eventId) : null;
 
-  const request = pool.request();
+  const params = [];
   let query = `
     SELECT
-      av.AvailabilityId,
-      av.EventId,
-      ce.Title AS EventTitle,
-      CONVERT(VARCHAR(10), av.AvailableDate, 23) AS AvailableDate,
-      CONVERT(VARCHAR(8), av.StartTime, 108) AS StartTime,
-      CONVERT(VARCHAR(8), av.EndTime, 108) AS EndTime,
-      av.DurationMinutes,
-      av.BufferBeforeMinutes,
-      av.BufferAfterMinutes,
-      av.MeetingPlatform,
-      av.MeetingLink,
-      av.Status,
-      av.CreatedDate,
-      av.UpdatedDate
-    FROM dbo.Availability av
-    INNER JOIN dbo.ConsultationEvents ce ON ce.EventId = av.EventId
+      av."AvailabilityId",
+      av."EventId",
+      ce."Title" AS "EventTitle",
+      av."AvailableDate",
+      av."StartTime",
+      av."EndTime",
+      av."DurationMinutes",
+      av."BufferBeforeMinutes",
+      av."BufferAfterMinutes",
+      av."MeetingPlatform",
+      av."MeetingLink",
+      av."Status",
+      av."CreatedDate",
+      av."UpdatedDate"
+    FROM "Availability" av
+    INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
   `;
 
   if (eventId) {
-    request.input("eventId", sql.Int, eventId);
-    query += " WHERE av.EventId = @eventId ";
+    params.push(eventId);
+    query += ` WHERE av."EventId" = $${params.length} `;
   }
 
-  query += " ORDER BY av.AvailableDate, av.StartTime ";
-  const result = await request.query(query);
+  query += ' ORDER BY av."AvailableDate", av."StartTime" ';
+  const result = await pool.query(query, params);
 
-  return successResponse(res, "Availability fetched", { availability: result.recordset });
+  return successResponse(res, "Availability fetched", { availability: result.rows });
 });
 
 const getAvailabilityByEventId = asyncHandler(async (req, res) => {
@@ -57,33 +57,31 @@ const getAvailabilityByEventId = asyncHandler(async (req, res) => {
     const pool = await getPool();
     const eventId = Number(req.params.eventId);
 
-    const result = await pool
-      .request()
-      .input("eventId", sql.Int, eventId)
-      .query(`
-        SELECT
-          av.AvailabilityId,
-          av.EventId,
-          CONVERT(VARCHAR(10), av.AvailableDate, 23) AS AvailableDate,
-          CONVERT(VARCHAR(8), av.StartTime, 108) AS StartTime,
-          CONVERT(VARCHAR(8), av.EndTime, 108) AS EndTime,
-          av.DurationMinutes,
-          av.BufferBeforeMinutes,
-          av.BufferAfterMinutes,
-          av.MeetingPlatform,
-          av.MeetingLink,
-          av.Status,
+    const result = await pool.query(
+      `SELECT
+          av."AvailabilityId",
+          av."EventId",
+          av."AvailableDate",
+          av."StartTime",
+          av."EndTime",
+          av."DurationMinutes",
+          av."BufferBeforeMinutes",
+          av."BufferAfterMinutes",
+          av."MeetingPlatform",
+          av."MeetingLink",
+          av."Status",
           CASE WHEN EXISTS (
-            SELECT 1 FROM dbo.Bookings b
-            WHERE b.AvailabilityId = av.AvailabilityId
-              AND b.Status IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
-          ) THEN 1 ELSE 0 END AS IsBooked
-        FROM dbo.Availability av
-        WHERE av.EventId = @eventId
-        ORDER BY av.AvailableDate, av.StartTime
-      `);
+            SELECT 1 FROM "Bookings" b
+            WHERE b."AvailabilityId" = av."AvailabilityId"
+              AND b."Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+          ) THEN 1 ELSE 0 END AS "IsBooked"
+        FROM "Availability" av
+        WHERE av."EventId" = $1
+        ORDER BY av."AvailableDate", av."StartTime"`,
+      [eventId]
+    );
 
-    return successResponse(res, "Availability fetched", { availability: result.recordset });
+    return successResponse(res, "Availability fetched", { availability: result.rows });
   } catch (err) {
     // If DB unavailable, return empty availability so client can continue
     return successResponse(res, "Availability fetched (db unavailable)", { availability: [] });
@@ -155,48 +153,41 @@ const createAvailability = asyncHandler(async (req, res) => {
     return errorResponse(res, "No valid slots could be generated for this window", "NO_SLOTS_GENERATED", 400);
   }
 
-  const tx = new sql.Transaction(pool);
-  await tx.begin();
-
+  const client = await pool.connect();
   const insertedIds = [];
   try {
+    await client.query("BEGIN");
+
     for (const slot of slots) {
-      const insertResult = await new sql.Request(tx)
-        .input("eventId", sql.Int, Number(eventId))
-        .input("availableDate", sql.Date, availableDate)
-        .input("startTime", sql.Time, slot.start)
-        .input("endTime", sql.Time, slot.end)
-        .input("durationMinutes", sql.Int, duration)
-        .input("bufferBeforeMinutes", sql.Int, before)
-        .input("bufferAfterMinutes", sql.Int, after)
-        .input("meetingPlatform", sql.NVarChar(30), meetingPlatform || "Google Meet")
-        .input("meetingLink", sql.NVarChar(1000), meetingLink || null)
-        .input("status", sql.NVarChar(20), status || "ENABLED")
-        .query(`
-          DECLARE @InsertedIds TABLE (AvailabilityId INT);
+      const insertResult = await client.query(
+        `INSERT INTO "Availability"
+          ("EventId", "AvailableDate", "StartTime", "EndTime",
+           "DurationMinutes", "BufferBeforeMinutes", "BufferAfterMinutes", "MeetingPlatform", "MeetingLink", "Status")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING "AvailabilityId"`,
+        [
+          Number(eventId),
+          availableDate,
+          slot.start,
+          slot.end,
+          duration,
+          before,
+          after,
+          meetingPlatform || "Google Meet",
+          meetingLink || null,
+          status || "ENABLED",
+        ]
+      );
 
-          INSERT INTO dbo.Availability
-          (
-            EventId, AvailableDate, StartTime, EndTime,
-            DurationMinutes, BufferBeforeMinutes, BufferAfterMinutes, MeetingPlatform, MeetingLink, Status
-          )
-          OUTPUT INSERTED.AvailabilityId INTO @InsertedIds (AvailabilityId)
-          VALUES
-          (
-            @eventId, @availableDate, @startTime, @endTime,
-            @durationMinutes, @bufferBeforeMinutes, @bufferAfterMinutes, @meetingPlatform, @meetingLink, @status
-          );
-
-          SELECT TOP 1 AvailabilityId FROM @InsertedIds;
-        `);
-
-      insertedIds.push(insertResult.recordset[0].AvailabilityId);
+      insertedIds.push(insertResult.rows[0].AvailabilityId);
     }
 
-    await tx.commit();
+    await client.query("COMMIT");
   } catch (error) {
-    await tx.rollback();
+    await client.query("ROLLBACK");
     throw error;
+  } finally {
+    client.release();
   }
 
   return successResponse(
@@ -308,35 +299,24 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
 
   for (const slot of candidateSlots) {
     try {
-      const insertResult = await pool
-        .request()
-        .input("eventId", sql.Int, Number(eventId))
-        .input("availableDate", sql.Date, slot.availableDate)
-        .input("startTime", sql.Time, slot.startTime)
-        .input("endTime", sql.Time, slot.endTime)
-        .input("durationMinutes", sql.Int, duration)
-        .input("meetingPlatform", sql.NVarChar(30), meetingPlatform || "Google Meet")
-        .input("meetingLink", sql.NVarChar(1000), meetingLink || null)
-        .input("status", sql.NVarChar(20), status || "ENABLED")
-        .query(`
-          DECLARE @InsertedIds TABLE (AvailabilityId INT);
+      const insertResult = await pool.query(
+        `INSERT INTO "Availability"
+          ("EventId", "AvailableDate", "StartTime", "EndTime", "DurationMinutes", "MeetingPlatform", "MeetingLink", "Status")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING "AvailabilityId"`,
+        [
+          Number(eventId),
+          slot.availableDate,
+          slot.startTime,
+          slot.endTime,
+          duration,
+          meetingPlatform || "Google Meet",
+          meetingLink || null,
+          status || "ENABLED",
+        ]
+      );
 
-          INSERT INTO dbo.Availability
-          (
-            EventId, AvailableDate, StartTime, EndTime,
-            DurationMinutes, MeetingPlatform, MeetingLink, Status
-          )
-          OUTPUT INSERTED.AvailabilityId INTO @InsertedIds (AvailabilityId)
-          VALUES
-          (
-            @eventId, @availableDate, @startTime, @endTime,
-            @durationMinutes, @meetingPlatform, @meetingLink, @status
-          );
-
-          SELECT TOP 1 AvailabilityId FROM @InsertedIds;
-        `);
-
-      insertedIds.push(insertResult.recordset[0].AvailabilityId);
+      insertedIds.push(insertResult.rows[0].AvailabilityId);
     } catch (error) {
       skipped.push({ date: slot.availableDate, startTime: slot.startTime, reason: error.message });
     }
@@ -377,35 +357,35 @@ const updateAvailability = asyncHandler(async (req, res) => {
   }
 
   const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .input("availableDate", sql.Date, availableDate)
-    .input("startTime", sql.Time, startTime)
-    .input("endTime", sql.Time, endTime)
-    .input("durationMinutes", sql.Int, durationMinutes)
-    .input("bufferBeforeMinutes", sql.Int, bufferBeforeMinutes || 0)
-    .input("bufferAfterMinutes", sql.Int, bufferAfterMinutes || 0)
-    .input("meetingPlatform", sql.NVarChar(30), meetingPlatform || "Google Meet")
-    .input("meetingLink", sql.NVarChar(1000), meetingLink || null)
-    .input("status", sql.NVarChar(20), status)
-    .query(`
-      UPDATE dbo.Availability
-      SET
-        AvailableDate = @availableDate,
-        StartTime = @startTime,
-        EndTime = @endTime,
-        DurationMinutes = @durationMinutes,
-        BufferBeforeMinutes = @bufferBeforeMinutes,
-        BufferAfterMinutes = @bufferAfterMinutes,
-        MeetingPlatform = @meetingPlatform,
-        MeetingLink = @meetingLink,
-        Status = @status,
-        UpdatedDate = SYSUTCDATETIME()
-      WHERE AvailabilityId = @id
-    `);
+  const result = await pool.query(
+    `UPDATE "Availability"
+     SET
+       "AvailableDate" = $1,
+       "StartTime" = $2,
+       "EndTime" = $3,
+       "DurationMinutes" = $4,
+       "BufferBeforeMinutes" = $5,
+       "BufferAfterMinutes" = $6,
+       "MeetingPlatform" = $7,
+       "MeetingLink" = $8,
+       "Status" = $9,
+       "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+     WHERE "AvailabilityId" = $10`,
+    [
+      availableDate,
+      startTime,
+      endTime,
+      durationMinutes,
+      bufferBeforeMinutes || 0,
+      bufferAfterMinutes || 0,
+      meetingPlatform || "Google Meet",
+      meetingLink || null,
+      status,
+      id,
+    ]
+  );
 
-  if (result.rowsAffected[0] === 0) {
+  if (result.rowCount === 0) {
     return errorResponse(res, "Availability not found", "AVAILABILITY_NOT_FOUND", 404);
   }
 
@@ -417,12 +397,9 @@ const deleteAvailability = asyncHandler(async (req, res) => {
   const pool = await getPool();
 
   try {
-    const result = await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("DELETE FROM dbo.Availability WHERE AvailabilityId = @id");
+    const result = await pool.query('DELETE FROM "Availability" WHERE "AvailabilityId" = $1', [id]);
 
-    if (result.rowsAffected[0] === 0) {
+    if (result.rowCount === 0) {
       return errorResponse(res, "Availability not found", "AVAILABILITY_NOT_FOUND", 404);
     }
 
@@ -432,16 +409,16 @@ const deleteAvailability = asyncHandler(async (req, res) => {
     // FK, so it can't be hard-deleted without losing that history. Disabling it instead
     // achieves what the admin actually wants — it stops appearing to customers — without
     // breaking referential integrity.
-    if (!/REFERENCE constraint|FK_Bookings_Availability/i.test(error.message || "")) {
+    if (error.code !== "23503") {
       throw error;
     }
 
-    const disableResult = await pool
-      .request()
-      .input("id", sql.Int, id)
-      .query("UPDATE dbo.Availability SET Status = 'DISABLED', UpdatedDate = SYSUTCDATETIME() WHERE AvailabilityId = @id");
+    const disableResult = await pool.query(
+      `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+      [id]
+    );
 
-    if (disableResult.rowsAffected[0] === 0) {
+    if (disableResult.rowCount === 0) {
       return errorResponse(res, "Availability not found", "AVAILABILITY_NOT_FOUND", 404);
     }
 
@@ -456,12 +433,12 @@ const deleteAvailability = asyncHandler(async (req, res) => {
 const enableAvailability = asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("UPDATE dbo.Availability SET Status = 'ENABLED', UpdatedDate = SYSUTCDATETIME() WHERE AvailabilityId = @id");
+  const result = await pool.query(
+    `UPDATE "Availability" SET "Status" = 'ENABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+    [id]
+  );
 
-  if (result.rowsAffected[0] === 0) {
+  if (result.rowCount === 0) {
     return errorResponse(res, "Availability not found", "AVAILABILITY_NOT_FOUND", 404);
   }
 
@@ -471,12 +448,12 @@ const enableAvailability = asyncHandler(async (req, res) => {
 const disableAvailability = asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("id", sql.Int, id)
-    .query("UPDATE dbo.Availability SET Status = 'DISABLED', UpdatedDate = SYSUTCDATETIME() WHERE AvailabilityId = @id");
+  const result = await pool.query(
+    `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = (now() AT TIME ZONE 'UTC') WHERE "AvailabilityId" = $1`,
+    [id]
+  );
 
-  if (result.rowsAffected[0] === 0) {
+  if (result.rowCount === 0) {
     return errorResponse(res, "Availability not found", "AVAILABILITY_NOT_FOUND", 404);
   }
 
@@ -487,11 +464,9 @@ const ALLOWED_NOTICE_HOURS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 
 
 const getBookingSettings = asyncHandler(async (req, res) => {
   const pool = await getPool();
-  const result = await pool.request().query(`
-    SELECT MinimumNoticeHours FROM dbo.BookingSettings WHERE SettingId = 1
-  `);
+  const result = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
 
-  const minimumNoticeHours = result.recordset[0]?.MinimumNoticeHours ?? 24;
+  const minimumNoticeHours = result.rows[0]?.MinimumNoticeHours ?? 24;
   return successResponse(res, "Booking settings fetched", { minimumNoticeHours });
 });
 
@@ -503,14 +478,12 @@ const updateBookingSettings = asyncHandler(async (req, res) => {
   }
 
   const pool = await getPool();
-  await pool
-    .request()
-    .input("minimumNoticeHours", sql.Int, Number(minimumNoticeHours))
-    .query(`
-      UPDATE dbo.BookingSettings
-      SET MinimumNoticeHours = @minimumNoticeHours, UpdatedDate = SYSUTCDATETIME()
-      WHERE SettingId = 1
-    `);
+  await pool.query(
+    `UPDATE "BookingSettings"
+     SET "MinimumNoticeHours" = $1, "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+     WHERE "SettingId" = 1`,
+    [Number(minimumNoticeHours)]
+  );
 
   return successResponse(res, "Booking settings updated", { minimumNoticeHours: Number(minimumNoticeHours) });
 });
@@ -519,46 +492,40 @@ const listPublicAvailability = asyncHandler(async (req, res) => {
   const eventId = Number(req.params.eventId);
   const pool = await getPool();
 
-  const result = await pool
-    .request()
-    .input("eventId", sql.Int, eventId)
-    .query(`
-      SELECT
-        av.AvailabilityId,
-        av.EventId,
-        CONVERT(VARCHAR(10), av.AvailableDate, 23) AS AvailableDate,
-        CONVERT(VARCHAR(8), av.StartTime, 108) AS StartTime,
-        CONVERT(VARCHAR(8), av.EndTime, 108) AS EndTime,
-        av.MeetingPlatform,
-        av.MeetingLink,
-        av.Status,
-        e.DurationMinutes,
-        e.BufferBeforeMinutes,
-        e.BufferAfterMinutes
-      FROM dbo.Availability av
-      INNER JOIN dbo.ConsultationEvents e ON e.EventId = av.EventId
-      WHERE av.EventId = @eventId
-        AND av.Status = 'ENABLED'
-        AND e.IsActive = 1
-        AND DATETIMEFROMPARTS(
-          YEAR(av.AvailableDate), MONTH(av.AvailableDate), DAY(av.AvailableDate),
-          DATEPART(HOUR, av.StartTime), DATEPART(MINUTE, av.StartTime), DATEPART(SECOND, av.StartTime), 0
-        ) > DATEADD(
-          HOUR,
-          (SELECT MinimumNoticeHours FROM dbo.BookingSettings WHERE SettingId = 1),
-          DATEADD(MINUTE, 330, SYSUTCDATETIME())
+  const result = await pool.query(
+    `SELECT
+        av."AvailabilityId",
+        av."EventId",
+        av."AvailableDate",
+        av."StartTime",
+        av."EndTime",
+        av."MeetingPlatform",
+        av."MeetingLink",
+        av."Status",
+        e."DurationMinutes",
+        e."BufferBeforeMinutes",
+        e."BufferAfterMinutes"
+      FROM "Availability" av
+      INNER JOIN "ConsultationEvents" e ON e."EventId" = av."EventId"
+      WHERE av."EventId" = $1
+        AND av."Status" = 'ENABLED'
+        AND e."IsActive" = TRUE
+        AND (av."AvailableDate" + av."StartTime") > (
+          (now() AT TIME ZONE 'Asia/Kolkata')
+          + ((SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1) * INTERVAL '1 hour')
         )
-        AND av.AvailableDate <= CONVERT(DATE, DATEADD(DAY, 14, DATEADD(MINUTE, 330, SYSUTCDATETIME())))
+        AND av."AvailableDate" <= ((now() AT TIME ZONE 'Asia/Kolkata') + INTERVAL '14 days')::date
         AND NOT EXISTS (
           SELECT 1
-          FROM dbo.Bookings b
-          WHERE b.AvailabilityId = av.AvailabilityId
-            AND b.Status IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+          FROM "Bookings" b
+          WHERE b."AvailabilityId" = av."AvailabilityId"
+            AND b."Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
         )
-      ORDER BY av.AvailableDate, av.StartTime
-    `);
+      ORDER BY av."AvailableDate", av."StartTime"`,
+    [eventId]
+  );
 
-  return successResponse(res, "Public availability fetched", { availability: result.recordset });
+  return successResponse(res, "Public availability fetched", { availability: result.rows });
 });
 
 module.exports = {

@@ -102,31 +102,32 @@ app.use("/api/public", publicRoutes);
 app.get("/api/admin/dashboard", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const pool = await getPool();
-    const result = await pool.request().query(`
+    const result = await pool.query(`
       SELECT
-        (SELECT COUNT(*) FROM dbo.Bookings) AS TotalBookings,
-        (SELECT COUNT(*) FROM dbo.Bookings WHERE BookingDate = CONVERT(date, DATEADD(MINUTE, 330, SYSUTCDATETIME()))) AS TodaysBookings,
-        (SELECT COUNT(*) FROM dbo.Bookings WHERE BookingDate >= CONVERT(date, DATEADD(MINUTE, 330, SYSUTCDATETIME())) AND Status IN ('PENDING','CONFIRMED','RESCHEDULED')) AS UpcomingBookings,
-        (SELECT COUNT(*) FROM dbo.Bookings WHERE Status = 'CANCELLED') AS CancelledBookings,
-        (SELECT COUNT(*) FROM dbo.Bookings WHERE Status = 'REJECTED') AS RejectedBookings,
-        (SELECT COUNT(*) FROM dbo.Bookings WHERE Status = 'RESCHEDULED') AS RescheduledBookings
+        (SELECT COUNT(*) FROM "Bookings") AS "TotalBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" = ((now() AT TIME ZONE 'Asia/Kolkata')::date)) AS "TodaysBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "BookingDate" >= ((now() AT TIME ZONE 'Asia/Kolkata')::date) AND "Status" IN ('PENDING','CONFIRMED','RESCHEDULED')) AS "UpcomingBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'CANCELLED') AS "CancelledBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'REJECTED') AS "RejectedBookings",
+        (SELECT COUNT(*) FROM "Bookings" WHERE "Status" = 'RESCHEDULED') AS "RescheduledBookings"
     `);
 
-    const recentBookings = await pool.request().query(`
-      SELECT TOP 10
-        b.BookingId,
-        b.CustomerName,
-        b.CustomerEmail,
-        CONVERT(VARCHAR(10), b.BookingDate, 23) AS BookingDate,
-        CONVERT(VARCHAR(8), b.StartTime, 108) AS StartTime,
-        b.Status
-      FROM dbo.Bookings b
-      ORDER BY b.CreatedDate DESC
+    const recentBookings = await pool.query(`
+      SELECT
+        b."BookingId",
+        b."CustomerName",
+        b."CustomerEmail",
+        b."BookingDate",
+        b."StartTime",
+        b."Status"
+      FROM "Bookings" b
+      ORDER BY b."CreatedDate" DESC
+      LIMIT 10
     `);
 
     return successResponse(res, "Dashboard data fetched", {
-      metrics: result.recordset[0],
-      recentBookings: recentBookings.recordset,
+      metrics: result.rows[0],
+      recentBookings: recentBookings.rows,
     });
   } catch (error) {
     return next(error);

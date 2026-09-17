@@ -14,29 +14,26 @@ if (-not (Test-Path (Join-Path $root '.env'))) {
   Write-Output ".env already exists"
 }
 
-# Try to find and start a SQL Server service
-$svcCandidates = @('MSSQL$SQLEXPRESS','MSSQLSERVER')
+# Try to find and start the local PostgreSQL service
+$svcCandidates = Get-Service -Name 'postgresql*' -ErrorAction SilentlyContinue
 $found = $false
-foreach ($name in $svcCandidates) {
-  $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-  if ($svc) {
-    $found = $true
-    if ($svc.Status -ne 'Running') {
-      try {
-        Start-Service -Name $name -ErrorAction Stop
-        Write-Output "Started SQL service: $name"
-      } catch {
-        Write-Warning ("Failed to start service {0}: {1}" -f $name, $_.Exception.Message)
-      }
-    } else {
-      Write-Output "SQL service $name is already running"
+foreach ($svc in $svcCandidates) {
+  $found = $true
+  if ($svc.Status -ne 'Running') {
+    try {
+      Start-Service -Name $svc.Name -ErrorAction Stop
+      Write-Output "Started PostgreSQL service: $($svc.Name)"
+    } catch {
+      Write-Warning ("Failed to start service {0}: {1}" -f $svc.Name, $_.Exception.Message)
     }
-    break
+  } else {
+    Write-Output "PostgreSQL service $($svc.Name) is already running"
   }
+  break
 }
 
 if (-not $found) {
-  Write-Warning "No local SQL Server service (SQLEXPRESS or default) was found. Skipping start step."
+  Write-Warning "No local PostgreSQL service was found. Skipping start step."
 }
 
 # Optionally install npm deps if missing

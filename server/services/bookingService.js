@@ -1,37 +1,41 @@
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 
 async function getBookingById(bookingId) {
   const pool = await getPool();
-  const result = await pool
-    .request()
-    .input("bookingId", sql.BigInt, bookingId)
-    .query(`
-      SELECT
-        b.BookingId,
-        b.BookingReference,
-        b.EventId,
-        b.AvailabilityId,
-        b.CustomerName,
-        b.CustomerEmail,
-        b.PhoneNumber,
-        b.Message,
-        CONVERT(VARCHAR(10), b.BookingDate, 23) AS BookingDate,
-        CONVERT(VARCHAR(8), b.StartTime, 108) AS StartTime,
-        CONVERT(VARCHAR(8), b.EndTime, 108) AS EndTime,
-        b.MeetingPlatform,
-        b.MeetingLink,
-        b.Status,
-        e.Title,
-        e.DurationMinutes,
-        e.NotificationEmail
-      FROM dbo.Bookings b
-      INNER JOIN dbo.ConsultationEvents e ON e.EventId = b.EventId
-      WHERE b.BookingId = @bookingId
-    `);
+  const result = await pool.query(
+    `SELECT
+        b."BookingId",
+        b."BookingReference",
+        b."EventId",
+        b."AvailabilityId",
+        b."CustomerName",
+        b."CustomerEmail",
+        b."PhoneNumber",
+        b."Message",
+        b."BookingDate",
+        b."StartTime",
+        b."EndTime",
+        b."MeetingPlatform",
+        b."MeetingLink",
+        b."Status",
+        e."Title",
+        e."DurationMinutes",
+        e."NotificationEmail"
+      FROM "Bookings" b
+      INNER JOIN "ConsultationEvents" e ON e."EventId" = b."EventId"
+      WHERE b."BookingId" = $1`,
+    [bookingId]
+  );
 
-  return result.recordset[0] || null;
+  return result.rows[0] || null;
 }
 
+// Ported from the SQL Server dbo.sp_CreatePublicBooking stored procedure: same
+// lock-then-check-then-insert shape as rescheduleBooking below, using
+// SELECT ... FOR UPDATE in place of WITH (UPDLOCK, HOLDLOCK). Validation order
+// and thrown error text intentionally match the old THROW messages so
+// bookingController.js's mapBookingError() substring matching keeps working
+// unchanged.
 async function createPublicBooking({
   eventId,
   availabilityId,
@@ -42,70 +46,133 @@ async function createPublicBooking({
 }) {
   const pool = await getPool();
 
-  const request = pool.request();
-  request.input("EventId", sql.Int, eventId);
-  request.input("AvailabilityId", sql.Int, availabilityId);
-  request.input("CustomerName", sql.NVarChar(150), customerName);
-  request.input("CustomerEmail", sql.NVarChar(255), customerEmail);
-  request.input("PhoneNumber", sql.NVarChar(25), phoneNumber || null);
-  request.input("Message", sql.NVarChar(2000), message || null);
-  request.output("BookingId", sql.BigInt);
-  request.output("BookingStatus", sql.NVarChar(20));
+  const settingsResult = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
+  const minimumNoticeHours = settingsResult.rows[0]?.MinimumNoticeHours ?? 24;
 
-  const spResult = await request.execute("dbo.sp_CreatePublicBooking");
-  const bookingId = spResult.output.BookingId;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
 
-  return getBookingById(bookingId);
+    const slotResult = await client.query(
+      `SELECT
+          av."AvailableDate", av."StartTime", av."EndTime", av."Status" AS "SlotStatus",
+          av."MeetingPlatform", av."MeetingLink",
+          ce."RequiresApproval", ce."IsActive" AS "IsEventActive",
+          (av."AvailableDate" + av."StartTime") <= (
+            (now() AT TIME ZONE 'Asia/Kolkata') + ($3 * INTERVAL '1 hour')
+          ) AS "NoticeViolated"
+        FROM "Availability" av
+        INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
+        WHERE av."AvailabilityId" = $1 AND av."EventId" = $2
+        FOR UPDATE OF av`,
+      [availabilityId, eventId, minimumNoticeHours]
+    );
+
+    const slot = slotResult.rows[0];
+    if (!slot) {
+      throw new Error("Selected slot was not found.");
+    }
+    if (!slot.IsEventActive) {
+      throw new Error("Event is disabled.");
+    }
+    if (slot.SlotStatus !== "ENABLED") {
+      throw new Error("Selected slot is not available.");
+    }
+    if (slot.NoticeViolated) {
+      throw new Error("This slot no longer meets the minimum booking notice.");
+    }
+
+    const duplicateResult = await client.query(
+      `SELECT "BookingId"
+        FROM "Bookings"
+        WHERE "AvailabilityId" = $1
+          AND "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+        LIMIT 1
+        FOR UPDATE`,
+      [availabilityId]
+    );
+
+    if (duplicateResult.rows.length > 0) {
+      throw new Error("This slot has already been booked.");
+    }
+
+    const bookingStatus = slot.RequiresApproval ? "PENDING" : "CONFIRMED";
+
+    const insertResult = await client.query(
+      `INSERT INTO "Bookings"
+        ("EventId", "AvailabilityId", "CustomerName", "CustomerEmail", "PhoneNumber", "Message",
+         "BookingDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING "BookingId"`,
+      [
+        eventId,
+        availabilityId,
+        customerName,
+        customerEmail,
+        phoneNumber || null,
+        message || null,
+        slot.AvailableDate,
+        slot.StartTime,
+        slot.EndTime,
+        slot.MeetingPlatform,
+        slot.MeetingLink,
+        bookingStatus,
+      ]
+    );
+
+    await client.query("COMMIT");
+    return getBookingById(insertResult.rows[0].BookingId);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function updateBookingStatus({ bookingId, status }) {
   const pool = await getPool();
-  await pool
-    .request()
-    .input("bookingId", sql.BigInt, bookingId)
-    .input("status", sql.NVarChar(20), status)
-    .query(`
-      UPDATE dbo.Bookings
-      SET Status = @status,
-          UpdatedDate = SYSUTCDATETIME()
-      WHERE BookingId = @bookingId
-    `);
+  await pool.query(
+    `UPDATE "Bookings"
+     SET "Status" = $1,
+         "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+     WHERE "BookingId" = $2`,
+    [status, bookingId]
+  );
 
   return getBookingById(bookingId);
 }
 
 async function rescheduleBooking({ bookingId, newAvailabilityId }) {
   const pool = await getPool();
-  const tx = new sql.Transaction(pool);
-  await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+  const client = await pool.connect();
 
   try {
-    const lockReq = new sql.Request(tx);
-    const lockResult = await lockReq
-      .input("bookingId", sql.BigInt, bookingId)
-      .query(`
-        SELECT BookingId, EventId
-        FROM dbo.Bookings WITH (UPDLOCK, HOLDLOCK)
-        WHERE BookingId = @bookingId
-      `);
+    await client.query("BEGIN");
 
-    const lockedBooking = lockResult.recordset[0];
+    const lockResult = await client.query(
+      `SELECT "BookingId", "EventId"
+       FROM "Bookings"
+       WHERE "BookingId" = $1
+       FOR UPDATE`,
+      [bookingId]
+    );
+
+    const lockedBooking = lockResult.rows[0];
     if (!lockedBooking) {
       throw new Error("Booking not found");
     }
 
-    const slotReq = new sql.Request(tx);
-    const slotResult = await slotReq
-      .input("availabilityId", sql.Int, newAvailabilityId)
-      .input("eventId", sql.Int, lockedBooking.EventId)
-      .query(`
-        SELECT AvailabilityId, AvailableDate, StartTime, EndTime, MeetingPlatform, MeetingLink, Status
-        FROM dbo.Availability WITH (UPDLOCK, HOLDLOCK)
-        WHERE AvailabilityId = @availabilityId
-          AND EventId = @eventId
-      `);
+    const slotResult = await client.query(
+      `SELECT "AvailabilityId", "AvailableDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status"
+       FROM "Availability"
+       WHERE "AvailabilityId" = $1
+         AND "EventId" = $2
+       FOR UPDATE`,
+      [newAvailabilityId, lockedBooking.EventId]
+    );
 
-    const slot = slotResult.recordset[0];
+    const slot = slotResult.rows[0];
     if (!slot) {
       throw new Error("Selected slot not found");
     }
@@ -113,47 +180,41 @@ async function rescheduleBooking({ bookingId, newAvailabilityId }) {
       throw new Error("Selected slot is not enabled");
     }
 
-    const duplicateReq = new sql.Request(tx);
-    const duplicateResult = await duplicateReq
-      .input("availabilityId", sql.Int, newAvailabilityId)
-      .query(`
-        SELECT TOP 1 BookingId
-        FROM dbo.Bookings WITH (UPDLOCK, HOLDLOCK)
-        WHERE AvailabilityId = @availabilityId
-          AND Status IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
-      `);
+    const duplicateResult = await client.query(
+      `SELECT "BookingId"
+       FROM "Bookings"
+       WHERE "AvailabilityId" = $1
+         AND "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+       LIMIT 1
+       FOR UPDATE`,
+      [newAvailabilityId]
+    );
 
-    if (duplicateResult.recordset.length > 0) {
+    if (duplicateResult.rows.length > 0) {
       throw new Error("Selected slot is already booked");
     }
 
-    const updateReq = new sql.Request(tx);
-    await updateReq
-      .input("bookingId", sql.BigInt, bookingId)
-      .input("availabilityId", sql.Int, slot.AvailabilityId)
-      .input("bookingDate", sql.Date, slot.AvailableDate)
-      .input("startTime", sql.Time, slot.StartTime)
-      .input("endTime", sql.Time, slot.EndTime)
-      .input("meetingPlatform", sql.NVarChar(30), slot.MeetingPlatform)
-      .input("meetingLink", sql.NVarChar(1000), slot.MeetingLink)
-      .query(`
-        UPDATE dbo.Bookings
-        SET AvailabilityId = @availabilityId,
-            BookingDate = @bookingDate,
-            StartTime = @startTime,
-            EndTime = @endTime,
-            MeetingPlatform = @meetingPlatform,
-            MeetingLink = @meetingLink,
-            Status = 'RESCHEDULED',
-            UpdatedDate = SYSUTCDATETIME()
-        WHERE BookingId = @bookingId
-      `);
+    await client.query(
+      `UPDATE "Bookings"
+       SET "AvailabilityId" = $1,
+           "BookingDate" = $2,
+           "StartTime" = $3,
+           "EndTime" = $4,
+           "MeetingPlatform" = $5,
+           "MeetingLink" = $6,
+           "Status" = 'RESCHEDULED',
+           "UpdatedDate" = (now() AT TIME ZONE 'UTC')
+       WHERE "BookingId" = $7`,
+      [slot.AvailabilityId, slot.AvailableDate, slot.StartTime, slot.EndTime, slot.MeetingPlatform, slot.MeetingLink, bookingId]
+    );
 
-    await tx.commit();
+    await client.query("COMMIT");
     return getBookingById(bookingId);
   } catch (error) {
-    await tx.rollback();
+    await client.query("ROLLBACK");
     throw error;
+  } finally {
+    client.release();
   }
 }
 

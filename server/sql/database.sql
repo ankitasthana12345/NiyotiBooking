@@ -1,449 +1,241 @@
 /*
-	Appointment Booking System - SQL Server Schema
-	Execute this script in SSMS.
+	Appointment Booking System - PostgreSQL Schema
+	Execute this script via `npm run db:schema` (server/scripts/run_schema.js),
+	since it programmatically creates the target database first if missing.
 */
 
-IF DB_ID(N'AppointmentBookingDB') IS NULL
-BEGIN
-	CREATE DATABASE AppointmentBookingDB;
-END;
-GO
-
-USE AppointmentBookingDB;
-GO
-
-SET ANSI_NULLS ON;
-SET QUOTED_IDENTIFIER ON;
-GO
-
 /* Drop programmable objects first for idempotent reruns */
-IF OBJECT_ID(N'dbo.trg_ConsultationEvents_UpdatedDate', N'TR') IS NOT NULL DROP TRIGGER dbo.trg_ConsultationEvents_UpdatedDate;
-IF OBJECT_ID(N'dbo.trg_AdminUsers_UpdatedDate', N'TR') IS NOT NULL DROP TRIGGER dbo.trg_AdminUsers_UpdatedDate;
-IF OBJECT_ID(N'dbo.trg_Availability_UpdatedDate', N'TR') IS NOT NULL DROP TRIGGER dbo.trg_Availability_UpdatedDate;
-IF OBJECT_ID(N'dbo.trg_Bookings_UpdatedDate', N'TR') IS NOT NULL DROP TRIGGER dbo.trg_Bookings_UpdatedDate;
-IF OBJECT_ID(N'dbo.trg_Availability_NoOverlap', N'TR') IS NOT NULL DROP TRIGGER dbo.trg_Availability_NoOverlap;
-IF OBJECT_ID(N'dbo.sp_CreatePublicBooking', N'P') IS NOT NULL DROP PROCEDURE dbo.sp_CreatePublicBooking;
-GO
+DROP TRIGGER IF EXISTS trg_ConsultationEvents_UpdatedDate ON "ConsultationEvents";
+DROP TRIGGER IF EXISTS trg_AdminUsers_UpdatedDate ON "AdminUsers";
+DROP TRIGGER IF EXISTS trg_Availability_UpdatedDate ON "Availability";
+DROP TRIGGER IF EXISTS trg_Bookings_UpdatedDate ON "Bookings";
+DROP TRIGGER IF EXISTS trg_Availability_NoOverlap ON "Availability";
+DROP FUNCTION IF EXISTS set_updated_date();
+DROP FUNCTION IF EXISTS check_availability_no_overlap();
 
 /* Drop tables in FK dependency order */
-IF OBJECT_ID(N'dbo.PasswordResetTokens', N'U') IS NOT NULL DROP TABLE dbo.PasswordResetTokens;
-IF OBJECT_ID(N'dbo.Bookings', N'U') IS NOT NULL DROP TABLE dbo.Bookings;
-IF OBJECT_ID(N'dbo.Availability', N'U') IS NOT NULL DROP TABLE dbo.Availability;
-IF OBJECT_ID(N'dbo.BookingSettings', N'U') IS NOT NULL DROP TABLE dbo.BookingSettings;
-IF OBJECT_ID(N'dbo.BlockedDates', N'U') IS NOT NULL DROP TABLE dbo.BlockedDates;
-IF OBJECT_ID(N'dbo.ConsultationEvents', N'U') IS NOT NULL DROP TABLE dbo.ConsultationEvents;
-IF OBJECT_ID(N'dbo.AdminUsers', N'U') IS NOT NULL DROP TABLE dbo.AdminUsers;
-GO
+DROP TABLE IF EXISTS "PasswordResetTokens";
+DROP TABLE IF EXISTS "Bookings";
+DROP TABLE IF EXISTS "Availability";
+DROP TABLE IF EXISTS "BookingSettings";
+DROP TABLE IF EXISTS "BlockedDates";
+DROP TABLE IF EXISTS "ConsultationEvents";
+DROP TABLE IF EXISTS "AdminUsers";
 
-CREATE TABLE dbo.AdminUsers
+CREATE TABLE "AdminUsers"
 (
-	AdminId INT IDENTITY(1,1) NOT NULL,
-	Username NVARCHAR(100) NOT NULL,
-	Email NVARCHAR(255) NOT NULL,
-	PasswordHash NVARCHAR(255) NOT NULL,
-	IsActive BIT NOT NULL CONSTRAINT DF_AdminUsers_IsActive DEFAULT (1),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_AdminUsers_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_AdminUsers_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_AdminUsers PRIMARY KEY CLUSTERED (AdminId),
-	CONSTRAINT UQ_AdminUsers_Username UNIQUE (Username),
-	CONSTRAINT UQ_AdminUsers_Email UNIQUE (Email)
+	"AdminId" INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"Username" VARCHAR(100) NOT NULL UNIQUE,
+	"Email" VARCHAR(255) NOT NULL UNIQUE,
+	"PasswordHash" VARCHAR(255) NOT NULL,
+	"IsActive" BOOLEAN NOT NULL DEFAULT TRUE,
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
 );
-GO
 
-CREATE TABLE dbo.ConsultationEvents
+CREATE TABLE "ConsultationEvents"
 (
-	EventId INT IDENTITY(1,1) NOT NULL,
-	Title NVARCHAR(200) NOT NULL,
-	[Description] NVARCHAR(2000) NULL,
-	DurationMinutes INT NOT NULL CONSTRAINT DF_ConsultationEvents_DurationMinutes DEFAULT (30),
-	BufferBeforeMinutes INT NOT NULL CONSTRAINT DF_ConsultationEvents_BufferBeforeMinutes DEFAULT (0),
-	BufferAfterMinutes INT NOT NULL CONSTRAINT DF_ConsultationEvents_BufferAfterMinutes DEFAULT (0),
-	MeetingPlatform NVARCHAR(30) NOT NULL CONSTRAINT DF_ConsultationEvents_MeetingPlatform DEFAULT (N'Google Meet'),
-	MeetingLink NVARCHAR(1000) NULL,
-	IsPaid BIT NOT NULL CONSTRAINT DF_ConsultationEvents_IsPaid DEFAULT (0),
-	Price DECIMAL(10,2) NOT NULL CONSTRAINT DF_ConsultationEvents_Price DEFAULT (0.00),
-	Currency CHAR(3) NOT NULL CONSTRAINT DF_ConsultationEvents_Currency DEFAULT ('INR'),
-	RequiresApproval BIT NOT NULL CONSTRAINT DF_ConsultationEvents_RequiresApproval DEFAULT (0),
-	NotificationEmail NVARCHAR(255) NULL,
-	IsActive BIT NOT NULL CONSTRAINT DF_ConsultationEvents_IsActive DEFAULT (1),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_ConsultationEvents_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_ConsultationEvents_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_ConsultationEvents PRIMARY KEY CLUSTERED (EventId),
-	CONSTRAINT CK_ConsultationEvents_DurationMinutes CHECK (DurationMinutes IN (15, 30, 45, 60, 90, 120)),
-	CONSTRAINT CK_ConsultationEvents_BufferBeforeMinutes CHECK (BufferBeforeMinutes BETWEEN 0 AND 10080),
-	CONSTRAINT CK_ConsultationEvents_BufferAfterMinutes CHECK (BufferAfterMinutes BETWEEN 0 AND 10080),
-	CONSTRAINT CK_ConsultationEvents_MeetingPlatform CHECK (MeetingPlatform IN (N'Google Meet', N'Zoom', N'Microsoft Teams', N'Custom')),
-	CONSTRAINT CK_ConsultationEvents_Price CHECK (Price >= 0),
-	CONSTRAINT CK_ConsultationEvents_Currency CHECK (Currency LIKE '[A-Z][A-Z][A-Z]'),
-	CONSTRAINT CK_ConsultationEvents_CustomLink
-		CHECK ((MeetingPlatform <> N'Custom') OR (MeetingLink IS NOT NULL AND LEN(LTRIM(RTRIM(MeetingLink))) > 0)),
-	CONSTRAINT CK_ConsultationEvents_PaidConfig
-		CHECK ((IsPaid = 0 AND Price = 0.00) OR (IsPaid = 1 AND Price >= 0.00))
+	"EventId" INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"Title" VARCHAR(200) NOT NULL,
+	"Description" VARCHAR(2000) NULL,
+	"DurationMinutes" INT NOT NULL DEFAULT 30
+		CONSTRAINT "CK_ConsultationEvents_DurationMinutes" CHECK ("DurationMinutes" IN (15, 30, 45, 60, 90, 120)),
+	"BufferBeforeMinutes" INT NOT NULL DEFAULT 0
+		CONSTRAINT "CK_ConsultationEvents_BufferBeforeMinutes" CHECK ("BufferBeforeMinutes" BETWEEN 0 AND 10080),
+	"BufferAfterMinutes" INT NOT NULL DEFAULT 0
+		CONSTRAINT "CK_ConsultationEvents_BufferAfterMinutes" CHECK ("BufferAfterMinutes" BETWEEN 0 AND 10080),
+	"MeetingPlatform" VARCHAR(30) NOT NULL DEFAULT 'Google Meet'
+		CONSTRAINT "CK_ConsultationEvents_MeetingPlatform" CHECK ("MeetingPlatform" IN ('Google Meet', 'Zoom', 'Microsoft Teams', 'Custom')),
+	"MeetingLink" VARCHAR(1000) NULL,
+	"IsPaid" BOOLEAN NOT NULL DEFAULT FALSE,
+	"Price" NUMERIC(10,2) NOT NULL DEFAULT 0.00
+		CONSTRAINT "CK_ConsultationEvents_Price" CHECK ("Price" >= 0),
+	"Currency" CHAR(3) NOT NULL DEFAULT 'INR'
+		CONSTRAINT "CK_ConsultationEvents_Currency" CHECK ("Currency" ~ '^[A-Z]{3}$'),
+	"RequiresApproval" BOOLEAN NOT NULL DEFAULT FALSE,
+	"NotificationEmail" VARCHAR(255) NULL,
+	"IsActive" BOOLEAN NOT NULL DEFAULT TRUE,
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	CONSTRAINT "CK_ConsultationEvents_CustomLink"
+		CHECK (("MeetingPlatform" <> 'Custom') OR ("MeetingLink" IS NOT NULL AND LENGTH(TRIM("MeetingLink")) > 0)),
+	CONSTRAINT "CK_ConsultationEvents_PaidConfig"
+		CHECK (("IsPaid" = FALSE AND "Price" = 0.00) OR ("IsPaid" = TRUE AND "Price" >= 0.00))
 );
-GO
 
-CREATE TABLE dbo.BlockedDates
+CREATE TABLE "BlockedDates"
 (
-	BlockedDateId INT IDENTITY(1,1) NOT NULL,
-	EventId INT NOT NULL,
-	BlockedDate DATE NOT NULL,
-	[Reason] NVARCHAR(500) NULL,
-	IsActive BIT NOT NULL CONSTRAINT DF_BlockedDates_IsActive DEFAULT (1),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_BlockedDates_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_BlockedDates_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_BlockedDates PRIMARY KEY CLUSTERED (BlockedDateId),
-	CONSTRAINT FK_BlockedDates_Event FOREIGN KEY (EventId) REFERENCES dbo.ConsultationEvents(EventId),
-	CONSTRAINT UQ_BlockedDates_Event_Date UNIQUE (EventId, BlockedDate)
+	"BlockedDateId" INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"EventId" INT NOT NULL REFERENCES "ConsultationEvents"("EventId"),
+	"BlockedDate" DATE NOT NULL,
+	"Reason" VARCHAR(500) NULL,
+	"IsActive" BOOLEAN NOT NULL DEFAULT TRUE,
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	CONSTRAINT "UQ_BlockedDates_Event_Date" UNIQUE ("EventId", "BlockedDate")
 );
-GO
 
 /* Global booking settings (single row). Controls how far in advance a slot must sit
    before the public booking page will offer it. */
-CREATE TABLE dbo.BookingSettings
+CREATE TABLE "BookingSettings"
 (
-	SettingId INT NOT NULL CONSTRAINT DF_BookingSettings_SettingId DEFAULT (1),
-	MinimumNoticeHours INT NOT NULL CONSTRAINT DF_BookingSettings_MinimumNoticeHours DEFAULT (24),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_BookingSettings_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_BookingSettings PRIMARY KEY CLUSTERED (SettingId),
-	CONSTRAINT CK_BookingSettings_SettingId CHECK (SettingId = 1),
-	CONSTRAINT CK_BookingSettings_MinimumNoticeHours CHECK (MinimumNoticeHours IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48))
+	"SettingId" INT NOT NULL DEFAULT 1 PRIMARY KEY
+		CONSTRAINT "CK_BookingSettings_SettingId" CHECK ("SettingId" = 1),
+	"MinimumNoticeHours" INT NOT NULL DEFAULT 24
+		CONSTRAINT "CK_BookingSettings_MinimumNoticeHours" CHECK ("MinimumNoticeHours" IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48)),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
 );
-GO
 
-INSERT INTO dbo.BookingSettings (SettingId, MinimumNoticeHours) VALUES (1, 24);
-GO
+INSERT INTO "BookingSettings" ("SettingId", "MinimumNoticeHours") VALUES (1, 24);
 
-CREATE TABLE dbo.Availability
+CREATE TABLE "Availability"
 (
-	AvailabilityId INT IDENTITY(1,1) NOT NULL,
-	EventId INT NOT NULL,
-	AvailableDate DATE NOT NULL,
-	StartTime TIME(0) NOT NULL,
-	EndTime TIME(0) NOT NULL,
-	DurationMinutes INT NOT NULL,
-	BufferBeforeMinutes INT NOT NULL CONSTRAINT DF_Availability_BufferBeforeMinutes DEFAULT (0),
-	BufferAfterMinutes INT NOT NULL CONSTRAINT DF_Availability_BufferAfterMinutes DEFAULT (0),
-	MeetingPlatform NVARCHAR(30) NOT NULL CONSTRAINT DF_Availability_MeetingPlatform DEFAULT (N'Google Meet'),
-	MeetingLink NVARCHAR(1000) NULL,
-	[Status] NVARCHAR(20) NOT NULL CONSTRAINT DF_Availability_Status DEFAULT (N'ENABLED'),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_Availability_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_Availability_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_Availability PRIMARY KEY CLUSTERED (AvailabilityId),
-	CONSTRAINT FK_Availability_Event FOREIGN KEY (EventId) REFERENCES dbo.ConsultationEvents(EventId),
-	CONSTRAINT CK_Availability_Status CHECK ([Status] IN (N'ENABLED', N'DISABLED', N'BLOCKED')),
-	CONSTRAINT CK_Availability_MeetingPlatform CHECK (MeetingPlatform IN (N'Google Meet', N'Zoom', N'Microsoft Teams', N'Custom')),
-	CONSTRAINT CK_Availability_TimeRange CHECK (StartTime < EndTime),
-	CONSTRAINT CK_Availability_Duration CHECK (DurationMinutes IN (15, 30, 45, 60, 90, 120)),
-	CONSTRAINT CK_Availability_BufferBefore CHECK (BufferBeforeMinutes BETWEEN 0 AND 10080),
-	CONSTRAINT CK_Availability_BufferAfter CHECK (BufferAfterMinutes BETWEEN 0 AND 10080),
-	CONSTRAINT UQ_Availability_Event_Date_Time UNIQUE (EventId, AvailableDate, StartTime)
+	"AvailabilityId" INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"EventId" INT NOT NULL REFERENCES "ConsultationEvents"("EventId"),
+	"AvailableDate" DATE NOT NULL,
+	"StartTime" TIME(0) NOT NULL,
+	"EndTime" TIME(0) NOT NULL,
+	"DurationMinutes" INT NOT NULL
+		CONSTRAINT "CK_Availability_Duration" CHECK ("DurationMinutes" IN (15, 30, 45, 60, 90, 120)),
+	"BufferBeforeMinutes" INT NOT NULL DEFAULT 0
+		CONSTRAINT "CK_Availability_BufferBefore" CHECK ("BufferBeforeMinutes" BETWEEN 0 AND 10080),
+	"BufferAfterMinutes" INT NOT NULL DEFAULT 0
+		CONSTRAINT "CK_Availability_BufferAfter" CHECK ("BufferAfterMinutes" BETWEEN 0 AND 10080),
+	"MeetingPlatform" VARCHAR(30) NOT NULL DEFAULT 'Google Meet'
+		CONSTRAINT "CK_Availability_MeetingPlatform" CHECK ("MeetingPlatform" IN ('Google Meet', 'Zoom', 'Microsoft Teams', 'Custom')),
+	"MeetingLink" VARCHAR(1000) NULL,
+	"Status" VARCHAR(20) NOT NULL DEFAULT 'ENABLED'
+		CONSTRAINT "CK_Availability_Status" CHECK ("Status" IN ('ENABLED', 'DISABLED', 'BLOCKED')),
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	CONSTRAINT "CK_Availability_TimeRange" CHECK ("StartTime" < "EndTime"),
+	CONSTRAINT "UQ_Availability_Event_Date_Time" UNIQUE ("EventId", "AvailableDate", "StartTime")
 );
-GO
 
-CREATE TABLE dbo.Bookings
+CREATE TABLE "Bookings"
 (
-	BookingId BIGINT IDENTITY(1,1) NOT NULL,
-	EventId INT NOT NULL,
-	AvailabilityId INT NOT NULL,
-	CustomerName NVARCHAR(150) NOT NULL,
-	CustomerEmail NVARCHAR(255) NOT NULL,
-	PhoneNumber NVARCHAR(25) NULL,
-	[Message] NVARCHAR(2000) NULL,
-	BookingDate DATE NOT NULL,
-	StartTime TIME(0) NOT NULL,
-	EndTime TIME(0) NOT NULL,
-	MeetingPlatform NVARCHAR(30) NOT NULL CONSTRAINT DF_Bookings_MeetingPlatform DEFAULT (N'Google Meet'),
-	MeetingLink NVARCHAR(1000) NULL,
-	[Status] NVARCHAR(20) NOT NULL,
-	BookingReference UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_Bookings_BookingReference DEFAULT (NEWID()),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_Bookings_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	UpdatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_Bookings_UpdatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_Bookings PRIMARY KEY CLUSTERED (BookingId),
-	CONSTRAINT FK_Bookings_Event FOREIGN KEY (EventId) REFERENCES dbo.ConsultationEvents(EventId),
-	CONSTRAINT FK_Bookings_Availability FOREIGN KEY (AvailabilityId) REFERENCES dbo.Availability(AvailabilityId),
-	CONSTRAINT CK_Bookings_Status CHECK ([Status] IN (N'PENDING', N'CONFIRMED', N'REJECTED', N'CANCELLED', N'RESCHEDULED')),
-	CONSTRAINT CK_Bookings_TimeRange CHECK (StartTime < EndTime)
+	"BookingId" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"EventId" INT NOT NULL REFERENCES "ConsultationEvents"("EventId"),
+	"AvailabilityId" INT NOT NULL REFERENCES "Availability"("AvailabilityId"),
+	"CustomerName" VARCHAR(150) NOT NULL,
+	"CustomerEmail" VARCHAR(255) NOT NULL,
+	"PhoneNumber" VARCHAR(25) NULL,
+	"Message" VARCHAR(2000) NULL,
+	"BookingDate" DATE NOT NULL,
+	"StartTime" TIME(0) NOT NULL,
+	"EndTime" TIME(0) NOT NULL,
+	"MeetingPlatform" VARCHAR(30) NOT NULL DEFAULT 'Google Meet',
+	"MeetingLink" VARCHAR(1000) NULL,
+	"Status" VARCHAR(20) NOT NULL
+		CONSTRAINT "CK_Bookings_Status" CHECK ("Status" IN ('PENDING', 'CONFIRMED', 'REJECTED', 'CANCELLED', 'RESCHEDULED')),
+	"BookingReference" UUID NOT NULL DEFAULT gen_random_uuid(),
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	"UpdatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+	CONSTRAINT "CK_Bookings_TimeRange" CHECK ("StartTime" < "EndTime")
 );
-GO
 
-CREATE TABLE dbo.PasswordResetTokens
+CREATE TABLE "PasswordResetTokens"
 (
-	TokenId BIGINT IDENTITY(1,1) NOT NULL,
-	AdminId INT NOT NULL,
-	ResetToken NVARCHAR(255) NOT NULL,
-	ExpiryDate DATETIME2(0) NOT NULL,
-	Used BIT NOT NULL CONSTRAINT DF_PasswordResetTokens_Used DEFAULT (0),
-	CreatedDate DATETIME2(0) NOT NULL CONSTRAINT DF_PasswordResetTokens_CreatedDate DEFAULT (SYSUTCDATETIME()),
-	CONSTRAINT PK_PasswordResetTokens PRIMARY KEY CLUSTERED (TokenId),
-	CONSTRAINT FK_PasswordResetTokens_Admin FOREIGN KEY (AdminId) REFERENCES dbo.AdminUsers(AdminId),
-	CONSTRAINT UQ_PasswordResetTokens_ResetToken UNIQUE (ResetToken)
+	"TokenId" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	"AdminId" INT NOT NULL REFERENCES "AdminUsers"("AdminId"),
+	"ResetToken" VARCHAR(255) NOT NULL UNIQUE,
+	"ExpiryDate" TIMESTAMP(0) NOT NULL,
+	"Used" BOOLEAN NOT NULL DEFAULT FALSE,
+	"CreatedDate" TIMESTAMP(0) NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
 );
-GO
+
+/* Auto-maintain UpdatedDate on any row update (shared by all 4 tables) */
+CREATE FUNCTION set_updated_date() RETURNS TRIGGER AS $$
+BEGIN
+	NEW."UpdatedDate" := (now() AT TIME ZONE 'UTC');
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_AdminUsers_UpdatedDate
+	BEFORE UPDATE ON "AdminUsers"
+	FOR EACH ROW EXECUTE FUNCTION set_updated_date();
+
+CREATE TRIGGER trg_ConsultationEvents_UpdatedDate
+	BEFORE UPDATE ON "ConsultationEvents"
+	FOR EACH ROW EXECUTE FUNCTION set_updated_date();
+
+CREATE TRIGGER trg_Availability_UpdatedDate
+	BEFORE UPDATE ON "Availability"
+	FOR EACH ROW EXECUTE FUNCTION set_updated_date();
+
+CREATE TRIGGER trg_Bookings_UpdatedDate
+	BEFORE UPDATE ON "Bookings"
+	FOR EACH ROW EXECUTE FUNCTION set_updated_date();
 
 /* Availability overlap guard */
-CREATE TRIGGER dbo.trg_Availability_NoOverlap
-ON dbo.Availability
-AFTER INSERT, UPDATE
-AS
+CREATE FUNCTION check_availability_no_overlap() RETURNS TRIGGER AS $$
 BEGIN
-	SET NOCOUNT ON;
-
-	IF EXISTS
-	(
+	IF EXISTS (
 		SELECT 1
-		FROM inserted i
-		INNER JOIN dbo.Availability a
-			ON a.EventId = i.EventId
-			AND a.AvailableDate = i.AvailableDate
-			AND a.AvailabilityId <> i.AvailabilityId
-			AND a.[Status] <> N'BLOCKED'
-			AND i.[Status] <> N'BLOCKED'
-			AND i.StartTime < a.EndTime
-			AND i.EndTime > a.StartTime
-	)
-	BEGIN
-		THROW 50010, 'Overlapping availability is not allowed for the same event and date.', 1;
-	END;
+		FROM "Availability" a
+		WHERE a."EventId" = NEW."EventId"
+		  AND a."AvailableDate" = NEW."AvailableDate"
+		  AND a."AvailabilityId" <> NEW."AvailabilityId"
+		  AND a."Status" <> 'BLOCKED'
+		  AND NEW."Status" <> 'BLOCKED'
+		  AND NEW."StartTime" < a."EndTime"
+		  AND NEW."EndTime" > a."StartTime"
+	) THEN
+		RAISE EXCEPTION 'Overlapping availability is not allowed for the same event and date.';
+	END IF;
+	RETURN NEW;
 END;
-GO
+$$ LANGUAGE plpgsql;
 
-/* Auto-maintain UpdatedDate */
-CREATE TRIGGER dbo.trg_AdminUsers_UpdatedDate
-ON dbo.AdminUsers
-AFTER UPDATE
-AS
-BEGIN
-	SET NOCOUNT ON;
-	UPDATE au
-	SET UpdatedDate = SYSUTCDATETIME()
-	FROM dbo.AdminUsers au
-	INNER JOIN inserted i ON i.AdminId = au.AdminId;
-END;
-GO
-
-CREATE TRIGGER dbo.trg_ConsultationEvents_UpdatedDate
-ON dbo.ConsultationEvents
-AFTER UPDATE
-AS
-BEGIN
-	SET NOCOUNT ON;
-	UPDATE ce
-	SET UpdatedDate = SYSUTCDATETIME()
-	FROM dbo.ConsultationEvents ce
-	INNER JOIN inserted i ON i.EventId = ce.EventId;
-END;
-GO
-
-CREATE TRIGGER dbo.trg_Availability_UpdatedDate
-ON dbo.Availability
-AFTER UPDATE
-AS
-BEGIN
-	SET NOCOUNT ON;
-	UPDATE av
-	SET UpdatedDate = SYSUTCDATETIME()
-	FROM dbo.Availability av
-   	INNER JOIN inserted i ON i.AvailabilityId = av.AvailabilityId;
-END;
-GO
-
-CREATE TRIGGER dbo.trg_Bookings_UpdatedDate
-ON dbo.Bookings
-AFTER UPDATE
-AS
-BEGIN
-	SET NOCOUNT ON;
-	UPDATE b
-	SET UpdatedDate = SYSUTCDATETIME()
-	FROM dbo.Bookings b
-	INNER JOIN inserted i ON i.BookingId = b.BookingId;
-END;
-GO
+CREATE TRIGGER trg_Availability_NoOverlap
+	BEFORE INSERT OR UPDATE ON "Availability"
+	FOR EACH ROW EXECUTE FUNCTION check_availability_no_overlap();
 
 /* Indexes */
-CREATE INDEX IX_Availability_Event_Date_Status_Start
-	ON dbo.Availability (EventId, AvailableDate, [Status], StartTime);
-GO
+CREATE INDEX "IX_Availability_Event_Date_Status_Start"
+	ON "Availability" ("EventId", "AvailableDate", "Status", "StartTime");
 
-CREATE INDEX IX_BlockedDates_Event_Date
-	ON dbo.BlockedDates (EventId, BlockedDate, IsActive);
-GO
+CREATE INDEX "IX_BlockedDates_Event_Date"
+	ON "BlockedDates" ("EventId", "BlockedDate", "IsActive");
 
-CREATE INDEX IX_Bookings_BookingDate_StartTime
-	ON dbo.Bookings (BookingDate, StartTime);
-GO
+CREATE INDEX "IX_Bookings_BookingDate_StartTime"
+	ON "Bookings" ("BookingDate", "StartTime");
 
-CREATE INDEX IX_Bookings_Status
-	ON dbo.Bookings ([Status]);
-GO
+CREATE INDEX "IX_Bookings_Status"
+	ON "Bookings" ("Status");
 
-CREATE INDEX IX_Bookings_CustomerEmail
-	ON dbo.Bookings (CustomerEmail);
-GO
+CREATE INDEX "IX_Bookings_CustomerEmail"
+	ON "Bookings" ("CustomerEmail");
 
-CREATE INDEX IX_Bookings_EventId
-	ON dbo.Bookings (EventId);
-GO
+CREATE INDEX "IX_Bookings_EventId"
+	ON "Bookings" ("EventId");
 
-CREATE INDEX IX_Bookings_AvailabilityId
-	ON dbo.Bookings (AvailabilityId);
-GO
+CREATE INDEX "IX_Bookings_AvailabilityId"
+	ON "Bookings" ("AvailabilityId");
 
-CREATE UNIQUE INDEX UX_Bookings_Active_Availability
-	ON dbo.Bookings (AvailabilityId)
-	WHERE [Status] IN (N'PENDING', N'CONFIRMED', N'RESCHEDULED');
-GO
+CREATE UNIQUE INDEX "UX_Bookings_Active_Availability"
+	ON "Bookings" ("AvailabilityId")
+	WHERE "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED');
 
-CREATE UNIQUE INDEX UX_Bookings_Active_Event_Date_Start
-	ON dbo.Bookings (EventId, BookingDate, StartTime)
-	WHERE [Status] IN (N'PENDING', N'CONFIRMED', N'RESCHEDULED');
-GO
+CREATE UNIQUE INDEX "UX_Bookings_Active_Event_Date_Start"
+	ON "Bookings" ("EventId", "BookingDate", "StartTime")
+	WHERE "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED');
 
-CREATE INDEX IX_PasswordResetTokens_Admin_Expiry_Used
-	ON dbo.PasswordResetTokens (AdminId, ExpiryDate, Used);
-GO
+CREATE INDEX "IX_PasswordResetTokens_Admin_Expiry_Used"
+	ON "PasswordResetTokens" ("AdminId", "ExpiryDate", "Used");
 
-/*
-	Booking procedure with transaction and row lock to prevent race-condition double booking.
-	Application should call this for public booking creation.
-*/
-CREATE PROCEDURE dbo.sp_CreatePublicBooking
-	@EventId INT,
-	@AvailabilityId INT,
-	@CustomerName NVARCHAR(150),
-	@CustomerEmail NVARCHAR(255),
-	@PhoneNumber NVARCHAR(25) = NULL,
-	@Message NVARCHAR(2000) = NULL,
-	@BookingId BIGINT OUTPUT,
-	@BookingStatus NVARCHAR(20) OUTPUT
-AS
-BEGIN
-	SET NOCOUNT ON;
-	SET XACT_ABORT ON;
-
-	DECLARE
-		@AvailableDate DATE,
-		@StartTime TIME(0),
-		@EndTime TIME(0),
-		@SlotStatus NVARCHAR(20),
-		@MeetingPlatform NVARCHAR(30),
-		@MeetingLink NVARCHAR(1000),
-		@RequiresApproval BIT,
-		@IsEventActive BIT,
-		@MinimumNoticeHours INT;
-
-	SELECT @MinimumNoticeHours = MinimumNoticeHours FROM dbo.BookingSettings WHERE SettingId = 1;
-	IF @MinimumNoticeHours IS NULL SET @MinimumNoticeHours = 24;
-
-	BEGIN TRANSACTION;
-
-	SELECT
-		@AvailableDate = av.AvailableDate,
-		@StartTime = av.StartTime,
-		@EndTime = av.EndTime,
-		@SlotStatus = av.[Status],
-		@MeetingPlatform = av.MeetingPlatform,
-		@MeetingLink = av.MeetingLink,
-		@RequiresApproval = ce.RequiresApproval,
-		@IsEventActive = ce.IsActive
-	FROM dbo.Availability av WITH (UPDLOCK, HOLDLOCK)
-	INNER JOIN dbo.ConsultationEvents ce ON ce.EventId = av.EventId
-	WHERE av.AvailabilityId = @AvailabilityId
-	  AND av.EventId = @EventId;
-
-	IF @AvailableDate IS NULL
-	BEGIN
-		ROLLBACK TRANSACTION;
-		THROW 50020, 'Selected slot was not found.', 1;
-	END;
-
-	IF @IsEventActive = 0
-	BEGIN
-		ROLLBACK TRANSACTION;
-		THROW 50021, 'Event is disabled.', 1;
-	END;
-
-	IF @SlotStatus <> N'ENABLED'
-	BEGIN
-		ROLLBACK TRANSACTION;
-		THROW 50022, 'Selected slot is not available.', 1;
-	END;
-
-	IF DATETIMEFROMPARTS(YEAR(@AvailableDate), MONTH(@AvailableDate), DAY(@AvailableDate), DATEPART(HOUR, @StartTime), DATEPART(MINUTE, @StartTime), DATEPART(SECOND, @StartTime), 0) <= DATEADD(HOUR, @MinimumNoticeHours, DATEADD(MINUTE, 330, SYSUTCDATETIME()))
-	BEGIN
-		ROLLBACK TRANSACTION;
-		THROW 50023, 'This slot no longer meets the minimum booking notice.', 1;
-	END;
-
-	IF EXISTS
-	(
-		SELECT 1
-		FROM dbo.Bookings b WITH (UPDLOCK, HOLDLOCK)
-		WHERE b.AvailabilityId = @AvailabilityId
-		  AND b.[Status] IN (N'PENDING', N'CONFIRMED', N'RESCHEDULED')
-	)
-	BEGIN
-		ROLLBACK TRANSACTION;
-		THROW 50025, 'This slot has already been booked.', 1;
-	END;
-
-	SET @BookingStatus = CASE WHEN @RequiresApproval = 1 THEN N'PENDING' ELSE N'CONFIRMED' END;
-
-	INSERT INTO dbo.Bookings
-	(
-		EventId,
-		AvailabilityId,
-		CustomerName,
-		CustomerEmail,
-		PhoneNumber,
-		[Message],
-		BookingDate,
-		StartTime,
-		EndTime,
-		MeetingPlatform,
-		MeetingLink,
-		[Status]
-	)
-	VALUES
-	(
-		@EventId,
-		@AvailabilityId,
-		@CustomerName,
-		@CustomerEmail,
-		@PhoneNumber,
-		@Message,
-		@AvailableDate,
-		@StartTime,
-		@EndTime,
-		@MeetingPlatform,
-		@MeetingLink,
-		@BookingStatus
-	);
-
-	SET @BookingId = SCOPE_IDENTITY();
-
-	COMMIT TRANSACTION;
-END;
-GO
+/* NOTE: the SQL Server version of this schema also defined a
+   dbo.sp_CreatePublicBooking stored procedure here (lock-then-check-then-insert
+   for public booking creation). That logic now lives in
+   server/services/bookingService.js::createPublicBooking as a plain JS
+   transaction using SELECT ... FOR UPDATE, mirroring rescheduleBooking. */
 
 /* Seed default admin (idempotent). Password: Niyoti@12345 */
-MERGE dbo.AdminUsers AS target
-USING
-(
-	SELECT
-		CAST(N'niyotishrivastava28' AS NVARCHAR(100)) AS Username,
-		CAST(N'niyoticoach@gmail.com' AS NVARCHAR(255)) AS Email,
-		CAST(N'$2b$12$.DeJrnSChXdJiTHqBUJ1D.pXyPGxSRDLOKxcpsGKfnQ6X.0SDbF1C' AS NVARCHAR(255)) AS PasswordHash
-) AS source
-ON target.Email = source.Email
-WHEN MATCHED THEN
-	UPDATE
-	SET
-		Username = source.Username,
-		PasswordHash = source.PasswordHash,
-		IsActive = 1,
-		UpdatedDate = SYSUTCDATETIME()
-WHEN NOT MATCHED THEN
-	INSERT (Username, Email, PasswordHash, IsActive)
-	VALUES (source.Username, source.Email, source.PasswordHash, 1);
-GO
+INSERT INTO "AdminUsers" ("Username", "Email", "PasswordHash", "IsActive")
+VALUES ('niyotishrivastava28', 'niyoticoach@gmail.com', '$2b$12$.DeJrnSChXdJiTHqBUJ1D.pXyPGxSRDLOKxcpsGKfnQ6X.0SDbF1C', TRUE)
+ON CONFLICT ("Email") DO UPDATE
+SET "Username" = EXCLUDED."Username",
+    "PasswordHash" = EXCLUDED."PasswordHash",
+    "IsActive" = TRUE,
+    "UpdatedDate" = (now() AT TIME ZONE 'UTC');
