@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $root
 
 # Ensure .env exists at repo root (copy from server/.env.example)
 if (-not (Test-Path (Join-Path $root '.env'))) {

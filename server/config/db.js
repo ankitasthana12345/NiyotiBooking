@@ -117,11 +117,18 @@ function parseBool(value, fallback = false) {
   return String(value).toLowerCase() === "true";
 }
 
+function hasConfiguredValue(value) {
+  return Boolean(value && !/^<[^>]+>$/.test(String(value)) && !/^YOUR_/i.test(String(value)));
+}
+
+// GoDaddy's managed Node.js Hosting injects DB_HOST, DB_PORT, DB_NAME,
+// DB_USER, and DB_PASSWORD when a hosted database is attached. DB_DATABASE
+// remains as a backwards-compatible local-development alias.
 function getDbConfig() {
   return {
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT || 3306),
-    database: process.env.DB_DATABASE,
+    database: process.env.DB_NAME || process.env.DB_DATABASE,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     connectTimeout: Number(process.env.DB_TIMEOUT_MS || 8000),
@@ -143,8 +150,11 @@ async function getPool() {
     const config = getDbConfig();
     const timeoutMs = Number(process.env.DB_TIMEOUT_MS || 8000);
 
-    const required = ["DB_HOST", "DB_DATABASE", "DB_USER", "DB_PASSWORD"];
-    const missing = required.filter((key) => !process.env[key]);
+    const required = ["DB_HOST", "DB_USER", "DB_PASSWORD"];
+    const missing = required.filter((key) => !hasConfiguredValue(process.env[key]));
+    if (!hasConfiguredValue(process.env.DB_NAME) && !hasConfiguredValue(process.env.DB_DATABASE)) {
+      missing.push("DB_DATABASE (or DB_NAME)");
+    }
     if (missing.length > 0) {
       throw new Error(`Missing required DB environment variables: ${missing.join(", ")}`);
     }

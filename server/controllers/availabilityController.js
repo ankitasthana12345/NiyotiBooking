@@ -16,6 +16,31 @@ function localDateString(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// Stands in for the Postgres trg_Availability_NoOverlap trigger, which the MySQL
+// schema (database.sql) can't include. Not race-proof against two simultaneous
+// admin writes, but availability is admin-only so that's an acceptable tradeoff.
+async function hasOverlappingSlot(queryable, eventId, date, startTime, endTime, excludeId = 0) {
+  const result = await queryable.query(
+    `SELECT "AvailabilityId"
+       FROM "Availability"
+      WHERE "EventId" = $1
+        AND "AvailableDate" = $2
+        AND "StartTime" < $3
+        AND "EndTime" > $4
+        AND "AvailabilityId" <> $5
+      LIMIT 1`,
+    [eventId, date, endTime, startTime, excludeId]
+  );
+  return result.rows.length > 0;
+}
+
+async function eventIdForSlot(queryable, availabilityId) {
+  const result = await queryable.query('SELECT "EventId" FROM "Availability" WHERE "AvailabilityId" = $1', [availabilityId]);
+  return result.rows[0]?.EventId ?? 0;
+}
+
+const OVERLAP_MESSAGE = "This slot overlaps an existing slot for the same event and date";
+
 const listAvailability = asyncHandler(async (req, res) => {
   const pool = await getPool();
   const eventId = req.query.eventId ? Number(req.query.eventId) : null;
@@ -159,6 +184,12 @@ const createAvailability = asyncHandler(async (req, res) => {
     await client.query("BEGIN");
 
     for (const slot of slots) {
+      if (await hasOverlappingSlot(client, Number(eventId), availableDate, slot.start, slot.end)) {
+        const overlapError = new Error(OVERLAP_MESSAGE);
+        overlapError.code = "SLOT_OVERLAP";
+        throw overlapError;
+      }
+
       const insertResult = await client.query(
         `INSERT INTO "Availability"
           ("EventId", "AvailableDate", "StartTime", "EndTime",
@@ -185,6 +216,9 @@ const createAvailability = asyncHandler(async (req, res) => {
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
+    if (error.code === "SLOT_OVERLAP") {
+      return errorResponse(res, error.message, "SLOT_OVERLAP", 409);
+    }
     throw error;
   } finally {
     client.release();
@@ -299,6 +333,10 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
 
   for (const slot of candidateSlots) {
     try {
+      if (await hasOverlappingSlot(pool, Number(eventId), slot.availableDate, slot.startTime, slot.endTime)) {
+        throw new Error(OVERLAP_MESSAGE);
+      }
+
       const insertResult = await pool.query(
         `INSERT INTO "Availability"
           ("EventId", "AvailableDate", "StartTime", "EndTime", "DurationMinutes", "MeetingPlatform", "MeetingLink", "Status")
@@ -357,6 +395,11 @@ const updateAvailability = asyncHandler(async (req, res) => {
   }
 
   const pool = await getPool();
+
+  if (await hasOverlappingSlot(pool, await eventIdForSlot(pool, id), availableDate, startTime, endTime, id)) {
+    return errorResponse(res, OVERLAP_MESSAGE, "SLOT_OVERLAP", 409);
+  }
+
   const result = await pool.query(
     `UPDATE "Availability"
      SET

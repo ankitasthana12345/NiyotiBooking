@@ -1,3 +1,4 @@
+const { randomUUID } = require("crypto");
 const { getPool } = require("../config/db");
 
 async function getBookingById(bookingId) {
@@ -98,11 +99,13 @@ async function createPublicBooking({
 
     const bookingStatus = slot.RequiresApproval ? "PENDING" : "CONFIRMED";
 
+    // The MySQL schema has no DEFAULT (UUID()) for BookingReference (unsupported on
+    // the hosted DB), so it's generated here.
     const insertResult = await client.query(
       `INSERT INTO "Bookings"
         ("EventId", "AvailabilityId", "CustomerName", "CustomerEmail", "PhoneNumber", "Message",
-         "BookingDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         "BookingDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status", "BookingReference")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING "BookingId"`,
       [
         eventId,
@@ -117,6 +120,7 @@ async function createPublicBooking({
         slot.MeetingPlatform,
         slot.MeetingLink,
         bookingStatus,
+        randomUUID(),
       ]
     );
 

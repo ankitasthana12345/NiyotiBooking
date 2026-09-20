@@ -36,9 +36,9 @@ async function ensureDatabaseExists(databaseName) {
 }
 
 async function run() {
-  const databaseName = process.env.DB_DATABASE;
+  const databaseName = process.env.DB_DATABASE || process.env.DB_NAME;
   if (!databaseName) {
-    console.error('DB_DATABASE is not set.');
+    console.error('DB_DATABASE (or DB_NAME) is not set.');
     process.exitCode = 1;
     return;
   }
