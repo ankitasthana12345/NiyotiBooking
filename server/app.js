@@ -2,6 +2,7 @@ const path = require("path");
 const dotenv = require("dotenv");
 const express = require("express");
 const session = require("express-session");
+const MySQLStore = require("express-mysql-session")(session);
 const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
@@ -49,6 +50,26 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 
+const hasSessionDatabase = [
+  process.env.DB_HOST,
+  process.env.DB_USER,
+  process.env.DB_PASSWORD,
+  process.env.DB_NAME || process.env.DB_DATABASE,
+].every(Boolean);
+
+const sessionStore = hasSessionDatabase
+  ? new MySQLStore({
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT || 3306),
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME || process.env.DB_DATABASE,
+      createDatabaseTable: true,
+      clearExpired: true,
+      checkExpirationInterval: 900000,
+    })
+  : undefined;
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -68,6 +89,7 @@ const forgotLimiter = rateLimit({
 app.use(
   session({
     name: "sessionId",
+    store: sessionStore,
     secret: process.env.SESSION_SECRET || "change-me-now",
     resave: false,
     saveUninitialized: false,

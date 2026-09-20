@@ -293,12 +293,19 @@ listBody?.addEventListener("click", (event) => {
   deleteSlot(Number(button.dataset.id));
 });
 
+// The feedback box sits at the top of the page but the submit button is far below it,
+// so bring the message into view or the button looks like it did nothing.
+function showFormAlert(message, type, autoCloseMs) {
+  showAlert(feedback, message, type, autoCloseMs);
+  feedback.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 availabilityForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   computeAllDayEndTimes();
 
   if (!currentEventId) {
-    showAlert(feedback, "No event found. Create an event first, then generate availability.", "danger");
+    showFormAlert("No event found. Create an event first, then generate availability.", "danger");
     return;
   }
 
@@ -311,7 +318,7 @@ availabilityForm?.addEventListener("submit", async (event) => {
   });
 
   if (!weeklySchedule.some((day) => day.enabled)) {
-    showAlert(feedback, "Enable at least one day and add at least one time for it.", "danger");
+    showFormAlert("Enable at least one day and add at least one time for it.", "danger");
     return;
   }
 
@@ -340,7 +347,7 @@ availabilityForm?.addEventListener("submit", async (event) => {
     });
     result = await response.json();
   } catch (error) {
-    showAlert(feedback, "Could not generate slots — the server returned an unexpected response. Please try again.", "danger");
+    showFormAlert("Could not generate slots — the server returned an unexpected response. Please try again.", "danger");
     return;
   } finally {
     submitBtn.disabled = false;
@@ -351,12 +358,11 @@ availabilityForm?.addEventListener("submit", async (event) => {
     return;
   }
 
-  showAlert(feedback, result.message, response.ok ? "success" : "danger");
+  showFormAlert(result.message, response.ok ? "success" : "danger");
 
   if (response.ok) {
     if (result.data?.skipped?.length) {
-      showAlert(
-        feedback,
+      showFormAlert(
         `${result.message}. Skipped: ${result.data.skipped
           .slice(0, 5)
           .map((s) => `${s.date} ${s.startTime} (${s.reason})`)
