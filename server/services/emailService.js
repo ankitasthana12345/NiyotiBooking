@@ -205,7 +205,7 @@ async function sendEmail({ to, subject, text, html }) {
   }
 
   const mailOptions = {
-    from: process.env.EMAIL_FROM,
+    from: process.env.EMAIL_FROM || process.env.SMTP_USER,
     to,
     subject,
     text,
