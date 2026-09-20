@@ -297,6 +297,11 @@ availabilityForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   computeAllDayEndTimes();
 
+  if (!currentEventId) {
+    showAlert(feedback, "No event found. Create an event first, then generate availability.", "danger");
+    return;
+  }
+
   const weeklySchedule = WEEK_DAYS.map((day) => {
     const enabled = document.getElementById(`day-enabled-${day.dow}`).checked;
     const times = enabled
