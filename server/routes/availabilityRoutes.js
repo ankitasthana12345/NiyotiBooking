@@ -30,16 +30,17 @@ router.get("/weekly", requireAuth, requireAdmin, (req, res) => {
   });
 });
 router.get("/:eventId", requireAuth, requireAdmin, [param("eventId").isInt({ min: 1 })], validateRequest, availabilityController.getAvailabilityByEventId);
-router.post("/", requireAuth, requireAdmin, [body("eventId").isInt({ min: 1 }), ...availabilityValidators], validateRequest, availabilityController.createAvailability);
+router.post("/", requireAuth, requireAdmin, [body("eventId").optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }), ...availabilityValidators], validateRequest, availabilityController.createAvailability);
 router.post(
   "/weekly",
   requireAuth,
   requireAdmin,
   [
-    body("eventId").isInt({ min: 1 }),
+    // eventId is optional: the server falls back to (or creates) the default event.
+    body("eventId").optional({ nullable: true, checkFalsy: true }).toInt().isInt({ min: 1 }),
     body("startDate").isISO8601(),
     body("endDate").isISO8601(),
-    body("durationMinutes").isIn([15, 30, 45, 60, 90, 120]),
+    body("durationMinutes").toInt().isIn([15, 30, 45, 60, 90, 120]),
     // Empty strings are treated as "not provided"; the controller re-validates
     // platform and link with clear messages.
     body("meetingPlatform").optional({ checkFalsy: true }).isIn(["Google Meet", "Zoom", "Microsoft Teams", "Custom"]),
@@ -50,6 +51,7 @@ router.post(
   validateRequest,
   availabilityController.createWeeklyAvailability
 );
+router.post("/disable-all", requireAuth, requireAdmin, availabilityController.disableAllAvailability);
 router.put("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 }), ...availabilityValidators], validateRequest, availabilityController.updateAvailability);
 router.delete("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, availabilityController.deleteAvailability);
 router.post("/:id/enable", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, availabilityController.enableAvailability);

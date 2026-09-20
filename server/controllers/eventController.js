@@ -208,7 +208,7 @@ const listPublicEvents = asyncHandler(async (req, res) => {
         "RequiresApproval"
       FROM "ConsultationEvents"
       WHERE "IsActive" = TRUE
-      ORDER BY "CreatedDate" DESC
+      ORDER BY "CreatedDate" DESC, "EventId" DESC
     `);
 
     return successResponse(res, "Public events fetched", { events: result.rows });

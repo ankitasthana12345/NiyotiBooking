@@ -18,7 +18,6 @@ const weeklyScheduleBox = document.getElementById("weeklySchedule");
 const step2Section = document.getElementById("step2Section");
 const step2Placeholder = document.getElementById("step2Placeholder");
 const minimumNoticeHoursSelect = document.getElementById("minimumNoticeHours");
-let currentEventId = null;
 
 // IST is UTC+5:30. Reading UTC fields off a timestamp shifted by that offset
 // yields IST wall-clock numbers regardless of the browser's own timezone.
@@ -202,16 +201,6 @@ rangeEndDateInput.min = rangeStartDateInput.value;
 
 updateStep2Visibility();
 
-async function loadCurrentEvent() {
-  const response = await fetch("/api/events", { credentials: "include" });
-  const result = await response.json();
-  if (!response.ok) return;
-
-  const events = result.data.events || [];
-  const active = events.find((event) => event.IsActive) || events[0];
-  currentEventId = active ? active.EventId : null;
-}
-
 async function loadBookingSettings() {
   const response = await fetch("/api/availability/settings", { credentials: "include" });
   const result = await response.json();
@@ -233,9 +222,7 @@ document.getElementById("saveNoticeHoursBtn")?.addEventListener("click", async (
 });
 
 async function loadAvailability() {
-  if (!currentEventId) return;
-
-  const response = await fetch(`/api/availability/${currentEventId}`, { credentials: "include" });
+  const response = await fetch("/api/availability", { credentials: "include" });
   const result = await response.json();
   if (!response.ok) return;
 
@@ -304,11 +291,6 @@ availabilityForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   computeAllDayEndTimes();
 
-  if (!currentEventId) {
-    showFormAlert("No event found. Create an event first, then generate availability.", "danger");
-    return;
-  }
-
   const weeklySchedule = WEEK_DAYS.map((day) => {
     const enabled = document.getElementById(`day-enabled-${day.dow}`).checked;
     const times = enabled
@@ -323,7 +305,6 @@ availabilityForm?.addEventListener("submit", async (event) => {
   }
 
   const payload = {
-    eventId: currentEventId,
     startDate: rangeStartDateInput.value,
     endDate: rangeEndDateInput.value,
     durationMinutes: Number(durationSelect.value),
@@ -382,7 +363,6 @@ availabilityForm?.addEventListener("submit", async (event) => {
 
 (async () => {
   await ensureAdmin();
-  await loadCurrentEvent();
   await loadBookingSettings();
   await loadAvailability();
 })();

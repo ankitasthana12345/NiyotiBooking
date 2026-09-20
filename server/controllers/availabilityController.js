@@ -40,6 +40,34 @@ async function eventIdForSlot(queryable, availabilityId) {
   return result.rows[0]?.EventId ?? 0;
 }
 
+// Slots always belong to a consultation event (FK), but admins shouldn't have to
+// set one up before generating availability. Use the requested event if it exists,
+// else the first active (or any) event, else create a default one so a fresh
+// database works out of the box.
+async function resolveEventId(pool, requestedId) {
+  if (requestedId) {
+    const found = await pool.query('SELECT "EventId" FROM "ConsultationEvents" WHERE "EventId" = $1', [Number(requestedId)]);
+    if (found.rows.length > 0) return Number(found.rows[0].EventId);
+  }
+
+  // Same ordering as listPublicEvents (newest active first), because the public
+  // booking page shows slots for the first event in that list.
+  const existing = await pool.query(
+    'SELECT "EventId" FROM "ConsultationEvents" ORDER BY "IsActive" DESC, "CreatedDate" DESC, "EventId" DESC LIMIT 1'
+  );
+  if (existing.rows.length > 0) return Number(existing.rows[0].EventId);
+
+  const created = await pool.query(
+    `INSERT INTO "ConsultationEvents"
+      ("Title", "Description", "DurationMinutes", "MeetingPlatform", "RequiresApproval", "IsActive")
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING "EventId"`,
+    ["Consultation", "Book a consultation slot.", 30, "Google Meet", true, true]
+  );
+  logger.info("Created default consultation event", { eventId: created.rows[0].EventId });
+  return Number(created.rows[0].EventId);
+}
+
 const PAST_MIDNIGHT_REASON = "Slot would run past midnight";
 const OVERLAP_MESSAGE ="This slot overlaps an existing slot for the same event and date";
 
@@ -63,7 +91,12 @@ const listAvailability = asyncHandler(async (req, res) => {
       av."MeetingLink",
       av."Status",
       av."CreatedDate",
-      av."UpdatedDate"
+      av."UpdatedDate",
+      CASE WHEN EXISTS (
+        SELECT 1 FROM "Bookings" b
+        WHERE b."AvailabilityId" = av."AvailabilityId"
+          AND b."Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+      ) THEN 1 ELSE 0 END AS "IsBooked"
     FROM "Availability" av
     INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
   `;
@@ -160,6 +193,7 @@ const createAvailability = asyncHandler(async (req, res) => {
   }
 
   const pool = await getPool();
+  const resolvedEventId = await resolveEventId(pool, eventId);
 
   const slots = [];
   let pointer = new Date(startAt);
@@ -186,7 +220,7 @@ const createAvailability = asyncHandler(async (req, res) => {
     await client.query("BEGIN");
 
     for (const slot of slots) {
-      if (await hasOverlappingSlot(client, Number(eventId), availableDate, slot.start, slot.end)) {
+      if (await hasOverlappingSlot(client, resolvedEventId, availableDate, slot.start, slot.end)) {
         const overlapError = new Error(OVERLAP_MESSAGE);
         overlapError.code = "SLOT_OVERLAP";
         throw overlapError;
@@ -199,7 +233,7 @@ const createAvailability = asyncHandler(async (req, res) => {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING "AvailabilityId"`,
         [
-          Number(eventId),
+          resolvedEventId,
           availableDate,
           slot.start,
           slot.end,
@@ -344,11 +378,12 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
   }
 
   const pool = await getPool();
+  const resolvedEventId = await resolveEventId(pool, eventId);
   const insertedIds = [];
 
   for (const slot of candidateSlots) {
     try {
-      if (await hasOverlappingSlot(pool, Number(eventId), slot.availableDate, slot.startTime, slot.endTime)) {
+      if (await hasOverlappingSlot(pool, resolvedEventId, slot.availableDate, slot.startTime, slot.endTime)) {
         throw new Error(OVERLAP_MESSAGE);
       }
 
@@ -358,7 +393,7 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING "AvailabilityId"`,
         [
-          Number(eventId),
+          resolvedEventId,
           slot.availableDate,
           slot.startTime,
           slot.endTime,
@@ -497,6 +532,20 @@ const deleteAvailability = asyncHandler(async (req, res) => {
   }
 });
 
+const disableAllAvailability = asyncHandler(async (req, res) => {
+  const pool = await getPool();
+  const result = await pool.query(
+    `UPDATE "Availability"
+        SET "Status" = 'DISABLED', "UpdatedDate" = UTC_TIMESTAMP()
+      WHERE "Status" <> 'DISABLED'`
+  );
+
+  return successResponse(res, "All availability slots disabled", {
+    slotsDisabled: result.rowCount,
+    hardDeleted: false,
+  });
+});
+
 const enableAvailability = asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   const pool = await getPool();
@@ -602,6 +651,7 @@ module.exports = {
   createWeeklyAvailability,
   updateAvailability,
   deleteAvailability,
+  disableAllAvailability,
   enableAvailability,
   disableAvailability,
   getBookingSettings,
