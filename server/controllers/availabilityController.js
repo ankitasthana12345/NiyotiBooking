@@ -1,4 +1,5 @@
 const { getPool } = require("../config/db");
+const logger = require("../config/logger");
 const asyncHandler = require("../utils/asyncHandler");
 const { successResponse, errorResponse } = require("../utils/apiResponse");
 
@@ -39,7 +40,8 @@ async function eventIdForSlot(queryable, availabilityId) {
   return result.rows[0]?.EventId ?? 0;
 }
 
-const OVERLAP_MESSAGE = "This slot overlaps an existing slot for the same event and date";
+const PAST_MIDNIGHT_REASON = "Slot would run past midnight";
+const OVERLAP_MESSAGE ="This slot overlaps an existing slot for the same event and date";
 
 const listAvailability = asyncHandler(async (req, res) => {
   const pool = await getPool();
@@ -261,8 +263,10 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
     return errorResponse(res, "Invalid duration", "INVALID_DURATION", 400);
   }
 
-  const rangeStart = new Date(`${startDate}T00:00:00`);
-  const rangeEnd = new Date(`${endDate}T00:00:00`);
+  // Slot times are IST wall-clock. Use UTC-based date math and compare against
+  // "now in IST" as a string so the result doesn't depend on the server's timezone.
+  const rangeStart = new Date(`${String(startDate).slice(0, 10)}T00:00:00Z`);
+  const rangeEnd = new Date(`${String(endDate).slice(0, 10)}T00:00:00Z`);
   if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime()) || rangeStart > rangeEnd) {
     return errorResponse(res, "Invalid date range", "INVALID_DATE_RANGE", 400);
   }
@@ -299,37 +303,48 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
   }
 
   const candidateSlots = [];
+  const skipped = [];
   const cursor = new Date(rangeStart);
-  const now = new Date();
+  const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 16);
 
   while (cursor <= rangeEnd) {
-    const entry = scheduleByDay.get(cursor.getDay());
+    const entry = scheduleByDay.get(cursor.getUTCDay());
     if (entry && entry.enabled) {
-      const dateStr = localDateString(cursor);
+      const dateStr = cursor.toISOString().slice(0, 10);
 
       for (const time of entry.times) {
-        const slotStartAt = new Date(`${dateStr}T${time}`);
-        const slotEndAt = new Date(slotStartAt.getTime() + duration * 60000);
-
-        if (slotStartAt > now) {
+        if (`${dateStr}T${time}` > nowIST) {
+          const [h, m] = time.split(":").map(Number);
+          const endMinutes = h * 60 + m + duration;
+          if (endMinutes > 24 * 60) {
+            // A slot can't run past midnight (EndTime would be earlier than StartTime).
+            skipped.push({ date: dateStr, startTime: time, reason: PAST_MIDNIGHT_REASON });
+            continue;
+          }
           candidateSlots.push({
             availableDate: dateStr,
             startTime: time,
-            endTime: `${String(slotEndAt.getHours()).padStart(2, "0")}:${String(slotEndAt.getMinutes()).padStart(2, "0")}`,
+            endTime: `${String(Math.floor(endMinutes / 60) % 24).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`,
           });
         }
       }
     }
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
   if (candidateSlots.length === 0) {
-    return errorResponse(res, "No valid slots could be generated for this schedule", "NO_SLOTS_GENERATED", 400);
+    return errorResponse(
+      res,
+      skipped.length
+        ? "No valid slots could be generated: the chosen times run past midnight for this duration"
+        : "No valid slots could be generated for this schedule (all times are in the past)",
+      "NO_SLOTS_GENERATED",
+      400
+    );
   }
 
   const pool = await getPool();
   const insertedIds = [];
-  const skipped = [];
 
   for (const slot of candidateSlots) {
     try {
@@ -356,12 +371,21 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
 
       insertedIds.push(insertResult.rows[0].AvailabilityId);
     } catch (error) {
-      skipped.push({ date: slot.availableDate, startTime: slot.startTime, reason: error.message });
+      // A duplicate start time hits the unique index; that's just an overlap.
+      const reason = error.code === "ER_DUP_ENTRY" ? OVERLAP_MESSAGE : error.message;
+      if (reason !== OVERLAP_MESSAGE) {
+        logger.error("Weekly availability insert failed", { message: error.message, code: error.code, slot });
+      }
+      skipped.push({ date: slot.availableDate, startTime: slot.startTime, reason });
     }
   }
 
   if (insertedIds.length === 0) {
-    return errorResponse(res, `All ${skipped.length} candidate slot(s) were skipped (likely overlaps)`, "ALL_SLOTS_SKIPPED", 409);
+    const realFailure = skipped.find((s) => s.reason !== OVERLAP_MESSAGE && s.reason !== PAST_MIDNIGHT_REASON);
+    if (realFailure) {
+      return errorResponse(res, `Could not create slots: ${realFailure.reason}`, "SLOT_INSERT_FAILED", 500);
+    }
+    return errorResponse(res, `All ${skipped.length} candidate slot(s) were skipped (they overlap existing slots)`, "ALL_SLOTS_SKIPPED", 409);
   }
 
   return successResponse(

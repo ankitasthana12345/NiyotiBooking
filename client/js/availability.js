@@ -326,23 +326,41 @@ availabilityForm?.addEventListener("submit", async (event) => {
     weeklySchedule,
   };
 
-  const response = await fetch("/api/availability/weekly", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const submitBtn = availabilityForm.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
 
-  const result = await response.json();
+  let response;
+  let result;
+  try {
+    response = await fetch("/api/availability/weekly", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    result = await response.json();
+  } catch (error) {
+    showAlert(feedback, "Could not generate slots — the server returned an unexpected response. Please try again.", "danger");
+    return;
+  } finally {
+    submitBtn.disabled = false;
+  }
+
+  if (response.status === 401) {
+    window.location.href = "/admin-login.html";
+    return;
+  }
+
   showAlert(feedback, result.message, response.ok ? "success" : "danger");
 
   if (response.ok) {
     if (result.data?.skipped?.length) {
       showAlert(
         feedback,
-        `${result.message}. ${result.data.skipped.length} date(s) were skipped (likely already had a slot): ${result.data.skipped
-          .map((s) => s.date)
-          .join(", ")}`,
+        `${result.message}. Skipped: ${result.data.skipped
+          .slice(0, 5)
+          .map((s) => `${s.date} ${s.startTime} (${s.reason})`)
+          .join("; ")}${result.data.skipped.length > 5 ? `; …and ${result.data.skipped.length - 5} more` : ""}`,
         "warning",
         0
       );

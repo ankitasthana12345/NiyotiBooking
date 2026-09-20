@@ -40,9 +40,11 @@ router.post(
     body("startDate").isISO8601(),
     body("endDate").isISO8601(),
     body("durationMinutes").isIn([15, 30, 45, 60, 90, 120]),
-    body("meetingPlatform").optional().isIn(["Google Meet", "Zoom", "Microsoft Teams", "Custom"]),
-    body("meetingLink").optional({ nullable: true }).isURL({ require_protocol: true }).isLength({ max: 1000 }),
-    body("status").optional().isIn(["ENABLED", "DISABLED", "BLOCKED"]),
+    // Empty strings are treated as "not provided"; the controller re-validates
+    // platform and link with clear messages.
+    body("meetingPlatform").optional({ checkFalsy: true }).isIn(["Google Meet", "Zoom", "Microsoft Teams", "Custom"]),
+    body("meetingLink").optional({ checkFalsy: true }).isLength({ max: 1000 }),
+    body("status").optional({ checkFalsy: true }).isIn(["ENABLED", "DISABLED", "BLOCKED"]),
     body("weeklySchedule").isArray({ min: 7, max: 7 }),
   ],
   validateRequest,
