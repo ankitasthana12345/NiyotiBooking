@@ -38,7 +38,7 @@ app.use(helmet());
 // apex domain and its www subdomain both need to be allowed).
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
-  : true;
+  : false;
 
 app.use(
   cors({

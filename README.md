@@ -10,22 +10,16 @@ A consultation and appointment booking system.
 npm install
 ```
 
-2. Configure database in `server/.env`.
+2. Configure MySQL in `.env` for local development, or attach a hosted
+	database in GoDaddy. GoDaddy injects these variables automatically:
 
-- For LocalDB (Windows Integrated Auth):
 ```
-DB_DRIVER=msnodesqlv8
-DB_CONNECTION_STRING=Driver={SQL Server};Server=(localdb)\\MSSQLLocalDB;Database=AppointmentBookingDB;Trusted_Connection=Yes;
-```
-
-- For SQL Server SQL Auth:
-```
-DB_DRIVER=tedious
-DB_SERVER=localhost
-DB_DATABASE=AppointmentBookingDB
-DB_USER=sa
-DB_PASSWORD=YourStrongPassword
-DB_PORT=1433
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=AppointmentBookingDB
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_SSL=false
 ```
 
 3. Start the app:
