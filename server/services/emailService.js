@@ -82,6 +82,11 @@ function timeRangeLabel(booking) {
   return `${formatTime12h(booking.StartTime)} – ${formatTime12h(booking.EndTime)} (${booking.DurationMinutes} minutes)`;
 }
 
+// Free-text fields (profession "Other") are user-controlled, so escape before putting them in HTML.
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 function detailRow(icon, label, value) {
   if (!value) return "";
   return `
@@ -94,7 +99,7 @@ function detailRow(icon, label, value) {
 
 function meetingLinkHtml(booking) {
   if (!booking.MeetingLink) return "N/A";
-  return `<a href="${booking.MeetingLink}" style="color: ${BRAND_COLOR}; text-decoration: none; font-weight: 600;">Join Meeting →</a>`;
+  return `<a href="${escapeHtml(booking.MeetingLink)}" style="color: ${BRAND_COLOR}; text-decoration: none; font-weight: 600;">Join Meeting →</a>`;
 }
 
 function statusBadgeHtml(status) {
@@ -134,25 +139,40 @@ function emailShell({ headline, introHtml, rowsHtml, footerHtml }) {
   `;
 }
 
-function customerBookingEmailHtml(booking) {
-  const rows = [
-    detailRow("📞", "Contact Number", booking.PhoneNumber || "N/A"),
-    booking.Message ? detailRow("📝", "Reason", booking.Message) : "",
+function fullName(booking) {
+  return [booking.CustomerTitle, booking.CustomerName].filter(Boolean).join(" ");
+}
+
+// Every detail we hold about the booking, shown identically to the customer and the admin.
+// All user-supplied text is escaped; the customer's own copy lets them spot a typo.
+function bookingDetailRows(booking) {
+  return [
+    detailRow("👤", "Name", escapeHtml(fullName(booking))),
+    detailRow("⚧", "Gender", escapeHtml(booking.Gender)),
+    detailRow("💼", "Profession", escapeHtml(booking.Profession)),
+    detailRow("✉️", "Email", escapeHtml(booking.CustomerEmail)),
+    detailRow("📞", "Contact Number", escapeHtml(booking.PhoneNumber || "N/A")),
+    detailRow("📝", "Question / Reason", escapeHtml(booking.Message)),
+    detailRow("💬", "Session", escapeHtml(booking.Title)),
     detailRow("🗓️", "Date", formatDateLong(booking.BookingDate)),
     detailRow("⏰", "Time", timeRangeLabel(booking)),
-    detailRow("📍", "Platform", booking.MeetingPlatform || "N/A"),
+    detailRow("⌛", "Duration", booking.DurationMinutes ? `${booking.DurationMinutes} minutes` : ""),
+    detailRow("📍", "Platform", escapeHtml(booking.MeetingPlatform || "N/A")),
     detailRow("🔗", "Meeting Link", meetingLinkHtml(booking)),
     detailRow("✅", "Status", statusBadgeHtml(booking.Status)),
+    detailRow("🔖", "Reference", escapeHtml(booking.BookingReference)),
     calendarButtonHtml(booking),
   ].join("");
+}
 
+function customerBookingEmailHtml(booking) {
   return emailShell({
     headline: CUSTOMER_HEADLINE[booking.Status] || "Appointment Update",
     introHtml: `
-      <p style="margin: 0 0 4px; font-size: 15px;">Hi <strong>${booking.CustomerName}</strong>,</p>
+      <p style="margin: 0 0 4px; font-size: 15px;">Hi <strong>${escapeHtml(fullName(booking))}</strong>,</p>
       <p style="margin: 0; font-size: 15px; color: #444;">${CUSTOMER_INTRO[booking.Status] || "Here's an update on your appointment:"}</p>
     `,
-    rowsHtml: rows,
+    rowsHtml: bookingDetailRows(booking),
     footerHtml: `
       <p style="margin: 22px 0 4px; font-size: 14px; color: #444;">We look forward to speaking with you. If you need to reschedule or have any questions, just reply to this email.</p>
       <p style="margin: 18px 0 0; font-size: 14px; color: #444;">Warm regards,<br/><strong>${BRAND_NAME}</strong></p>
@@ -161,37 +181,30 @@ function customerBookingEmailHtml(booking) {
 }
 
 function adminBookingEmailHtml(booking) {
-  const rows = [
-    detailRow("👤", "Customer Name", booking.CustomerName),
-    detailRow("✉️", "Email", booking.CustomerEmail),
-    detailRow("📞", "Contact Number", booking.PhoneNumber || "N/A"),
-    booking.Message ? detailRow("📝", "Reason", booking.Message) : "",
-    detailRow("🗓️", "Date", formatDateLong(booking.BookingDate)),
-    detailRow("⏰", "Time", timeRangeLabel(booking)),
-    detailRow("📍", "Platform", booking.MeetingPlatform || "N/A"),
-    detailRow("🔗", "Meeting Link", meetingLinkHtml(booking)),
-    detailRow("✅", "Status", statusBadgeHtml(booking.Status)),
-    calendarButtonHtml(booking),
-  ].join("");
-
   return emailShell({
     headline: ADMIN_HEADLINE[booking.Status] || "Booking Update",
     introHtml: `<p style="margin: 0; font-size: 15px; color: #444;">A booking on your calendar was just updated:</p>`,
-    rowsHtml: rows,
+    rowsHtml: bookingDetailRows(booking),
     footerHtml: `<p style="margin: 22px 0 0; font-size: 13px; color: #999;">Automated notification from your booking system.</p>`,
   });
 }
 
 function plainTextSummary(booking) {
   const lines = [
-    `Customer: ${booking.CustomerName}`,
+    `Name: ${fullName(booking)}`,
+    booking.Gender ? `Gender: ${booking.Gender}` : null,
+    booking.Profession ? `Profession: ${booking.Profession}` : null,
+    `Email: ${booking.CustomerEmail}`,
     `Contact Number: ${booking.PhoneNumber || "N/A"}`,
-    booking.Message ? `Reason: ${booking.Message}` : null,
+    booking.Message ? `Question / Reason: ${booking.Message}` : null,
+    booking.Title ? `Session: ${booking.Title}` : null,
     `Date: ${formatDateLong(booking.BookingDate)}`,
     `Time: ${timeRangeLabel(booking)}`,
+    booking.DurationMinutes ? `Duration: ${booking.DurationMinutes} minutes` : null,
     `Platform: ${booking.MeetingPlatform || "N/A"}`,
     booking.MeetingLink ? `Meeting Link: ${booking.MeetingLink}` : null,
     `Status: ${booking.Status}`,
+    booking.BookingReference ? `Reference: ${booking.BookingReference}` : null,
   ].filter(Boolean);
   return lines.join("\n");
 }

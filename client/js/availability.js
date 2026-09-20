@@ -31,14 +31,48 @@ function getNowIST() {
 }
 
 const WEEK_DAYS = [
-  { dow: 1, label: "Monday", defaultEnabled: true },
-  { dow: 2, label: "Tuesday", defaultEnabled: true },
-  { dow: 3, label: "Wednesday", defaultEnabled: true },
-  { dow: 4, label: "Thursday", defaultEnabled: true },
-  { dow: 5, label: "Friday", defaultEnabled: true },
-  { dow: 6, label: "Saturday", defaultEnabled: false },
-  { dow: 0, label: "Sunday", defaultEnabled: false },
+  { dow: 1, label: "Monday" },
+  { dow: 2, label: "Tuesday" },
+  { dow: 3, label: "Wednesday" },
+  { dow: 4, label: "Thursday" },
+  { dow: 5, label: "Friday" },
+  { dow: 6, label: "Saturday" },
+  { dow: 0, label: "Sunday" },
 ];
+
+// A range covers at most 7 days, so each weekday maps to exactly one calendar date.
+const MAX_RANGE_DAYS = 7;
+
+function addDays(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Dates in the chosen range, in order, e.g. Fri..Wed => Fri, Sat, Sun, Mon, Tue, Wed.
+function datesInRange(startStr, endStr) {
+  const dates = [];
+  for (let i = 0; i < MAX_RANGE_DAYS; i++) {
+    const dateStr = addDays(startStr, i);
+    if (dateStr > endStr) break;
+    dates.push({ dateStr, dow: new Date(`${dateStr}T00:00:00Z`).getUTCDay() });
+  }
+  return dates;
+}
+
+// Earliest bookable start today: the minute right after the current IST minute
+// (3:00 PM now => 3:01 PM). Returns null unless the range starts today.
+function getTodayMinTime(dow) {
+  const now = getNowIST();
+  if (rangeStartDateInput.value !== now.dateStr) return null;
+  if (new Date(`${now.dateStr}T00:00:00Z`).getUTCDay() !== dow) return null;
+  return Math.min(now.hour24 * 60 + now.minute + 1, 24 * 60 - 1);
+}
+
+function minutesToParts(totalMinutes) {
+  const hour24 = Math.floor(totalMinutes / 60);
+  return { hour: hour24 % 12 === 0 ? 12 : hour24 % 12, minute: totalMinutes % 60, period: hour24 < 12 ? "AM" : "PM" };
+}
 
 function buildHourOptions(selectedHour) {
   return Array.from({ length: 12 }, (_, i) => i + 1)
@@ -64,8 +98,8 @@ function populateWeeklyScheduleUI() {
       <div class="border rounded p-2" data-day="${day.dow}">
         <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
           <div class="form-check">
-            <input class="form-check-input" type="checkbox" id="day-enabled-${day.dow}" ${day.defaultEnabled ? "checked" : ""} />
-            <label class="form-check-label fw-semibold" for="day-enabled-${day.dow}">${day.label}</label>
+            <input class="form-check-input" type="checkbox" id="day-enabled-${day.dow}" />
+            <label class="form-check-label fw-semibold" for="day-enabled-${day.dow}">${day.label} <span class="text-muted fw-normal small" id="day-date-${day.dow}"></span></label>
           </div>
           <div class="d-flex align-items-center gap-2">
             <span class="badge text-bg-secondary" id="day-count-badge-${day.dow}">0 slots</span>
@@ -83,7 +117,10 @@ function populateWeeklyScheduleUI() {
 function suggestNextTime(dow) {
   const container = document.getElementById(`day-times-${dow}`);
   const rows = container.querySelectorAll(".time-row");
-  if (rows.length === 0) return { hour: 9, minute: 0, period: "AM" };
+  if (rows.length === 0) {
+    const minToday = getTodayMinTime(dow);
+    return minToday === null ? { hour: 9, minute: 0, period: "AM" } : minutesToParts(minToday);
+  }
 
   const lastRow = rows[rows.length - 1];
   let hour24 = Number(lastRow.querySelector(".time-hour").value) % 12;
@@ -165,23 +202,82 @@ weeklyScheduleBox?.addEventListener("click", (event) => {
   }
 });
 
+function getRowStartMinutes(row) {
+  const [h, m] = getRowStartTime24(row).split(":").map(Number);
+  return h * 60 + m;
+}
+
+// On today's date, nothing earlier than the next minute can be scheduled.
+function clampTodayRow(row, dow) {
+  const minToday = getTodayMinTime(dow);
+  if (minToday === null || getRowStartMinutes(row) >= minToday) return false;
+  const { hour, minute, period } = minutesToParts(minToday);
+  row.querySelector(".time-hour").value = String(hour);
+  row.querySelector(".time-minute").value = String(minute);
+  row.querySelector(".time-period").value = period;
+  return true;
+}
+
+function clampAllTodayRows() {
+  WEEK_DAYS.forEach((day) => {
+    document.querySelectorAll(`#day-times-${day.dow} .time-row`).forEach((row) => {
+      clampTodayRow(row, day.dow);
+      computeRowEndTime(row);
+    });
+  });
+}
+
 weeklyScheduleBox?.addEventListener("change", (event) => {
   const row = event.target.closest(".time-row");
-  if (row) computeRowEndTime(row);
+  if (!row) return;
+  const dow = Number(row.closest("[data-day]").dataset.day);
+  if (clampTodayRow(row, dow)) {
+    showAlert(feedback, "Times today must start at least one minute from now — adjusted to the earliest available time.", "warning");
+  }
+  computeRowEndTime(row);
 });
 
 populateWeeklyScheduleUI();
-// Seed each default-enabled day with one starter row so the form isn't empty on first load.
-WEEK_DAYS.forEach((day) => {
-  if (day.defaultEnabled) addTimeRow(day.dow, { hour: 9, minute: 0, period: "AM" });
-});
+
+const visibleDays = new Set();
+
+// Shows only the weekdays that fall inside the chosen range, ordered by date
+// (Mon..Fri => 5 days; Fri..Wed => Fri, Sat, Sun, Mon, Tue, Wed).
+function applyRangeToSchedule() {
+  const ordered = rangeStartDateInput.value && rangeEndDateInput.value
+    ? datesInRange(rangeStartDateInput.value, rangeEndDateInput.value)
+    : [];
+  const dateByDow = new Map(ordered.map((d) => [d.dow, d.dateStr]));
+
+  WEEK_DAYS.forEach((day) => {
+    const block = weeklyScheduleBox.querySelector(`[data-day="${day.dow}"]`);
+    const checkbox = document.getElementById(`day-enabled-${day.dow}`);
+    const dateStr = dateByDow.get(day.dow);
+
+    block.hidden = !dateStr;
+    document.getElementById(`day-date-${day.dow}`).textContent = dateStr ? `(${dateStr})` : "";
+
+    if (!dateStr) {
+      checkbox.checked = false;
+      visibleDays.delete(day.dow);
+    } else if (!visibleDays.has(day.dow)) {
+      visibleDays.add(day.dow);
+      checkbox.checked = true;
+      if (document.querySelectorAll(`#day-times-${day.dow} .time-row`).length === 0) addTimeRow(day.dow);
+    }
+  });
+
+  ordered.forEach((d) => weeklyScheduleBox.appendChild(weeklyScheduleBox.querySelector(`[data-day="${d.dow}"]`)));
+
+  clampAllTodayRows();
+}
 
 // Step 2 only becomes available once Step 1 (date range + duration) is fully filled in.
 function updateStep2Visibility() {
   const ready = Boolean(rangeStartDateInput.value) && Boolean(rangeEndDateInput.value) && Boolean(durationSelect.value);
   step2Section.hidden = !ready;
   step2Placeholder.hidden = ready;
-  if (ready) computeAllDayEndTimes();
+  if (ready) applyRangeToSchedule();
 }
 
 durationSelect?.addEventListener("change", updateStep2Visibility);
@@ -189,15 +285,30 @@ durationSelect?.addEventListener("change", updateStep2Visibility);
 rangeStartDateInput.min = getNowIST().dateStr;
 if (!rangeStartDateInput.value) rangeStartDateInput.value = getNowIST().dateStr;
 
-rangeStartDateInput?.addEventListener("change", () => {
-  rangeEndDateInput.min = rangeStartDateInput.value;
-  if (rangeEndDateInput.value && rangeEndDateInput.value < rangeStartDateInput.value) {
-    rangeEndDateInput.value = rangeStartDateInput.value;
+function syncRangeLimits() {
+  const start = rangeStartDateInput.value;
+  rangeEndDateInput.min = start;
+  rangeEndDateInput.max = start ? addDays(start, MAX_RANGE_DAYS - 1) : "";
+
+  if (start && rangeEndDateInput.value) {
+    if (rangeEndDateInput.value < start) {
+      rangeEndDateInput.value = start;
+    } else if (rangeEndDateInput.value > rangeEndDateInput.max) {
+      rangeEndDateInput.value = rangeEndDateInput.max;
+      showAlert(feedback, `A date range can cover at most ${MAX_RANGE_DAYS} days — end date adjusted.`, "warning");
+    }
   }
+}
+
+rangeStartDateInput?.addEventListener("change", () => {
+  syncRangeLimits();
   updateStep2Visibility();
 });
-rangeEndDateInput?.addEventListener("change", updateStep2Visibility);
-rangeEndDateInput.min = rangeStartDateInput.value;
+rangeEndDateInput?.addEventListener("change", () => {
+  syncRangeLimits();
+  updateStep2Visibility();
+});
+syncRangeLimits();
 
 updateStep2Visibility();
 
@@ -289,10 +400,12 @@ function showFormAlert(message, type, autoCloseMs) {
 
 availabilityForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  computeAllDayEndTimes();
+  // "Now" may have moved on since the form was filled in.
+  clampAllTodayRows();
 
   const weeklySchedule = WEEK_DAYS.map((day) => {
-    const enabled = document.getElementById(`day-enabled-${day.dow}`).checked;
+    const inRangeDay = !weeklyScheduleBox.querySelector(`[data-day="${day.dow}"]`).hidden;
+    const enabled = inRangeDay && document.getElementById(`day-enabled-${day.dow}`).checked;
     const times = enabled
       ? Array.from(document.querySelectorAll(`#day-times-${day.dow} .time-row`)).map((row) => getRowStartTime24(row))
       : [];
@@ -353,8 +466,8 @@ availabilityForm?.addEventListener("submit", async (event) => {
       );
     }
     rangeStartDateInput.value = getNowIST().dateStr;
-    rangeEndDateInput.min = rangeStartDateInput.value;
     rangeEndDateInput.value = "";
+    syncRangeLimits();
     document.getElementById("meetingLink").value = "";
     updateStep2Visibility();
     loadAvailability();

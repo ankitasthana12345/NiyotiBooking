@@ -3,6 +3,7 @@ const { body, param, query } = require("express-validator");
 const bookingController = require("../controllers/bookingController");
 const { requireAuth } = require("../middleware/authMiddleware");
 const { requireAdmin } = require("../middleware/adminMiddleware");
+const { TITLES, GENDERS } = require("../config/bookingOptions");
 const { validateRequest } = require("../middleware/validationMiddleware");
 
 const router = express.Router();
@@ -11,6 +12,9 @@ const bookingCreateValidators = [
   body("eventId").isInt({ min: 1 }),
   body("availabilityId").isInt({ min: 1 }),
   body("customerName").trim().isLength({ min: 2, max: 150 }),
+  body("title").optional({ nullable: true, checkFalsy: true }).isIn(TITLES),
+  body("gender").optional({ nullable: true, checkFalsy: true }).isIn(GENDERS),
+  body("profession").optional({ nullable: true, checkFalsy: true }).trim().isLength({ min: 2, max: 100 }),
   body("customerEmail").isEmail(),
   body("phoneNumber").optional({ nullable: true }).isLength({ max: 25 }),
   body("message").optional({ nullable: true }).isLength({ max: 2000 }),

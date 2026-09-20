@@ -12,6 +12,18 @@ const { sendBookingNotifications } = require("../services/emailService");
 function mapBookingError(res, error) {
   const message = error.message || "Booking failed";
 
+  if (message.includes("upcoming appointment with this email")) {
+    return errorResponse(res, message, "DUPLICATE_BOOKING", 409);
+  }
+
+  if (message.includes("booking window")) {
+    return errorResponse(res, message, "OUTSIDE_BOOKING_WINDOW", 400);
+  }
+
+  if (message.includes("booking for this customer is in progress")) {
+    return errorResponse(res, message, "BOOKING_IN_PROGRESS", 409);
+  }
+
   if (message.includes("already been booked") || message.includes("already booked")) {
     return errorResponse(res, "Selected slot is already booked", "SLOT_ALREADY_BOOKED", 409);
   }
@@ -47,6 +59,9 @@ const listBookings = asyncHandler(async (req, res) => {
       e."Title",
       b."AvailabilityId",
       b."CustomerName",
+      b."Title" AS "CustomerTitle",
+      b."Gender",
+      b."Profession",
       b."CustomerEmail",
       b."PhoneNumber",
       b."Message",
@@ -112,13 +127,16 @@ const getBooking = asyncHandler(async (req, res) => {
 });
 
 const createBookingByAdmin = asyncHandler(async (req, res) => {
-  const { eventId, availabilityId, customerName, customerEmail, phoneNumber, message } = req.body;
+  const { eventId, availabilityId, customerName, title, gender, profession, customerEmail, phoneNumber, message } = req.body;
   let booking;
   try {
     booking = await createPublicBooking({
       eventId: Number(eventId),
       availabilityId: Number(availabilityId),
       customerName,
+      title,
+      gender,
+      profession,
       customerEmail,
       phoneNumber,
       message,
@@ -137,13 +155,16 @@ const createBookingByAdmin = asyncHandler(async (req, res) => {
 });
 
 const createBookingByPublic = asyncHandler(async (req, res) => {
-  const { eventId, availabilityId, customerName, customerEmail, phoneNumber, message } = req.body;
+  const { eventId, availabilityId, customerName, title, gender, profession, customerEmail, phoneNumber, message } = req.body;
   let booking;
   try {
     booking = await createPublicBooking({
       eventId: Number(eventId),
       availabilityId: Number(availabilityId),
       customerName,
+      title,
+      gender,
+      profession,
       customerEmail,
       phoneNumber,
       message,

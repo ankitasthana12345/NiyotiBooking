@@ -1,4 +1,4 @@
-const { randomUUID } = require("crypto");
+const { randomUUID, createHash } = require("crypto");
 const { getPool } = require("../config/db");
 
 async function getBookingById(bookingId) {
@@ -10,6 +10,9 @@ async function getBookingById(bookingId) {
         b."EventId",
         b."AvailabilityId",
         b."CustomerName",
+        b."Title" AS "CustomerTitle",
+        b."Gender",
+        b."Profession",
         b."CustomerEmail",
         b."PhoneNumber",
         b."Message",
@@ -31,6 +34,66 @@ async function getBookingById(bookingId) {
   return result.rows[0] || null;
 }
 
+// Customers can only book slots up to this many days ahead. Must match the window
+// used by availabilityController.js::listPublicAvailability.
+const BOOKING_WINDOW_DAYS = 14;
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function normalizePhone(phone) {
+  return String(phone || "").replace(/\D/g, "");
+}
+
+// One person = same email OR same phone number. MySQL named locks serialise
+// concurrent bookings for the same person, because there's no existing row to
+// SELECT ... FOR UPDATE when the person has no bookings yet.
+function personLockNames(email, phoneDigits) {
+  const keys = [`email:${email}`];
+  if (phoneDigits) keys.push(`phone:${phoneDigits}`);
+  return keys.map((key) => `bp:${createHash("sha1").update(key).digest("hex")}`).sort();
+}
+
+async function releasePersonLocks(client, names) {
+  for (const name of names) {
+    try {
+      await client.query('SELECT RELEASE_LOCK($1) AS "ok"', [name]);
+    } catch (_) {
+      // The lock is dropped when the connection closes anyway.
+    }
+  }
+}
+
+async function acquirePersonLocks(client, names) {
+  const acquired = [];
+  for (const name of names) {
+    const result = await client.query('SELECT GET_LOCK($1, 10) AS "ok"', [name]);
+    if (Number(result.rows[0]?.ok) !== 1) {
+      await releasePersonLocks(client, acquired);
+      throw new Error("Another booking for this customer is in progress. Please try again.");
+    }
+    acquired.push(name);
+  }
+  return acquired;
+}
+
+async function hasUpcomingBookingForPerson(queryable, email, phoneDigits) {
+  const result = await queryable.query(
+    `SELECT "BookingId"
+       FROM "Bookings"
+      WHERE "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+        AND TIMESTAMP("BookingDate", "StartTime") > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE)
+        AND (
+          LOWER("CustomerEmail") = $1
+          OR ($2 <> '' AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("PhoneNumber", ' ', ''), '+', ''), '-', ''), '(', ''), ')', '') = $2)
+        )
+      LIMIT 1`,
+    [email, phoneDigits]
+  );
+  return result.rows.length > 0;
+}
+
 // Ported from the SQL Server dbo.sp_CreatePublicBooking stored procedure: same
 // lock-then-check-then-insert shape as rescheduleBooking below, using
 // SELECT ... FOR UPDATE in place of WITH (UPDLOCK, HOLDLOCK). Validation order
@@ -41,6 +104,9 @@ async function createPublicBooking({
   eventId,
   availabilityId,
   customerName,
+  title,
+  gender,
+  profession,
   customerEmail,
   phoneNumber,
   message,
@@ -50,8 +116,15 @@ async function createPublicBooking({
   const settingsResult = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
   const minimumNoticeHours = settingsResult.rows[0]?.MinimumNoticeHours ?? 24;
 
+  const email = normalizeEmail(customerEmail);
+  const phoneDigits = normalizePhone(phoneNumber);
+
   const client = await pool.connect();
+  let heldLocks = [];
   try {
+    // Locks must be taken before BEGIN so the transaction snapshot is created after
+    // any concurrent booking for the same person has committed.
+    heldLocks = await acquirePersonLocks(client, personLockNames(email, phoneDigits));
     await client.query("BEGIN");
 
     const slotResult = await client.query(
@@ -61,7 +134,10 @@ async function createPublicBooking({
           ce."RequiresApproval", ce."IsActive" AS "IsEventActive",
           TIMESTAMP(av."AvailableDate", av."StartTime") <= DATE_ADD(
             DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL $3 HOUR
-          ) AS "NoticeViolated"
+          ) AS "NoticeViolated",
+          av."AvailableDate" > DATE(
+            DATE_ADD(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL ${BOOKING_WINDOW_DAYS} DAY)
+          ) AS "BeyondWindow"
         FROM "Availability" av
         INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
         WHERE av."AvailabilityId" = $1 AND av."EventId" = $2
@@ -81,6 +157,14 @@ async function createPublicBooking({
     }
     if (slot.NoticeViolated) {
       throw new Error("This slot no longer meets the minimum booking notice.");
+    }
+
+    if (slot.BeyondWindow) {
+      throw new Error("This slot is outside the two-week booking window.");
+    }
+
+    if (await hasUpcomingBookingForPerson(client, email, phoneDigits)) {
+      throw new Error("You already have an upcoming appointment with this email or phone number.");
     }
 
     const duplicateResult = await client.query(
@@ -103,14 +187,17 @@ async function createPublicBooking({
     // the hosted DB), so it's generated here.
     const insertResult = await client.query(
       `INSERT INTO "Bookings"
-        ("EventId", "AvailabilityId", "CustomerName", "CustomerEmail", "PhoneNumber", "Message",
+        ("EventId", "AvailabilityId", "CustomerName", "Title", "Gender", "Profession", "CustomerEmail", "PhoneNumber", "Message",
          "BookingDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status", "BookingReference")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING "BookingId"`,
       [
         eventId,
         availabilityId,
         customerName,
+        title || null,
+        gender || null,
+        profession ? String(profession).trim() : null,
         customerEmail,
         phoneNumber || null,
         message || null,
@@ -130,6 +217,7 @@ async function createPublicBooking({
     await client.query("ROLLBACK");
     throw error;
   } finally {
+    await releasePersonLocks(client, heldLocks);
     client.release();
   }
 }

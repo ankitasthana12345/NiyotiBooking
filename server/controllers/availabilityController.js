@@ -270,6 +270,7 @@ const createAvailability = asyncHandler(async (req, res) => {
 
 const ALLOWED_DURATIONS = [15, 30, 45, 60, 90, 120];
 const TIME_24H_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const MAX_RANGE_DAYS = 7;
 const DAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 const createWeeklyAvailability = asyncHandler(async (req, res) => {
@@ -306,8 +307,10 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
   }
 
   const dayCount = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
-  if (dayCount > 366) {
-    return errorResponse(res, "Date range is too large (max 366 days)", "RANGE_TOO_LARGE", 400);
+  // A range of at most 7 days maps each weekday to exactly one calendar date, so the
+  // weekly schedule below is unambiguous (Mon-Fri = 5 dates, Fri-Wed = Fri..Wed).
+  if (dayCount > MAX_RANGE_DAYS) {
+    return errorResponse(res, `Date range is too large (max ${MAX_RANGE_DAYS} days)`, "RANGE_TOO_LARGE", 400);
   }
 
   if (!Array.isArray(weeklySchedule) || weeklySchedule.length !== 7) {

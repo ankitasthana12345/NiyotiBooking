@@ -42,7 +42,16 @@
               <form id="bookingForm" class="row g-3">
                 <div class="col-md-6">
                   <label class="form-label" for="customerName">Full Name</label>
-                  <input id="customerName" class="form-control" required />
+                  <div class="input-group">
+                    <select id="title" class="form-select flex-grow-0 w-auto" required>
+                      <option value="">Title</option>
+                      <option value="Mr.">Mr.</option>
+                      <option value="Mrs.">Mrs.</option>
+                      <option value="Ms.">Ms.</option>
+                      <option value="Miss">Miss</option>
+                    </select>
+                    <input id="customerName" class="form-control" required />
+                  </div>
                 </div>
                 <div class="col-md-6">
                   <label class="form-label" for="customerEmail">Email Address</label>
@@ -54,6 +63,21 @@
                     <select id="countryCode" class="form-select flex-grow-0 w-auto" required></select>
                     <input id="phoneNumber" class="form-control" required />
                   </div>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="gender">Gender</label>
+                  <select id="gender" class="form-select" required>
+                    <option value="">Select gender</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Non-binary">Non-binary</option>
+                    <option value="Prefer not to say">Prefer not to say</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label" for="profession">Profession</label>
+                  <select id="profession" class="form-select" required></select>
+                  <input id="professionOther" class="form-control mt-2 d-none" maxlength="100" placeholder="Type your profession" aria-label="Type your profession" />
                 </div>
                 <div class="col-md-6">
                   <label class="form-label" for="availableDateSelect">Available Date</label>
@@ -79,6 +103,7 @@
     </main>
 
     <script src="/js/format-utils.js"></script>
+    <script src="/js/professions.js"></script>
     <script src="/js/booking.js"></script>
   </body>
 </html>

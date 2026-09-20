@@ -44,6 +44,35 @@ function populateCountryCodes() {
 
 populateCountryCodes();
 
+const professionSelect = document.getElementById("profession");
+const professionOtherInput = document.getElementById("professionOther");
+
+function populateProfessions() {
+  if (!professionSelect) return;
+  professionSelect.innerHTML =
+    `<option value="">Select profession</option>` +
+    [...PROFESSIONS, OTHER_PROFESSION].map((p) => `<option value="${p}">${p}</option>`).join("");
+  toggleOtherProfession();
+}
+
+// "Other" reveals a free-text box, which then becomes the value that is submitted.
+function toggleOtherProfession() {
+  const isOther = professionSelect.value === OTHER_PROFESSION;
+  professionOtherInput.classList.toggle("d-none", !isOther);
+  professionOtherInput.required = isOther;
+  if (!isOther) professionOtherInput.value = "";
+}
+
+function getProfessionValue() {
+  return professionSelect.value === OTHER_PROFESSION ? professionOtherInput.value.trim() : professionSelect.value;
+}
+
+professionSelect?.addEventListener("change", () => {
+  toggleOtherProfession();
+  if (professionSelect.value === OTHER_PROFESSION) professionOtherInput.focus();
+});
+populateProfessions();
+
 function groupAvailabilityByDate(records) {
   return records.reduce((acc, record) => {
     if (!acc[record.AvailableDate]) acc[record.AvailableDate] = [];
@@ -143,7 +172,10 @@ bookingForm?.addEventListener("submit", async (event) => {
   const payload = {
     eventId: selectedEventId,
     availabilityId: selectedSlot,
+    title: document.getElementById("title").value,
     customerName: document.getElementById("customerName").value.trim(),
+    gender: document.getElementById("gender").value,
+    profession: getProfessionValue(),
     customerEmail: document.getElementById("customerEmail").value.trim(),
     phoneNumber: phoneDigits ? `${countryCodeSelect.value} ${phoneDigits}` : null,
     message: document.getElementById("message").value.trim() || null,
@@ -185,6 +217,7 @@ bookingForm?.addEventListener("submit", async (event) => {
 
   bookingForm.reset();
   populateCountryCodes();
+  toggleOtherProfession();
   await loadAvailability(selectedEventId);
 });
 

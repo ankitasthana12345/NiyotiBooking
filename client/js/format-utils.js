@@ -1,3 +1,8 @@
+// Escapes user-supplied text before it is placed into innerHTML.
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 function formatTime12h(timeStr) {
   if (!timeStr) return "";
 

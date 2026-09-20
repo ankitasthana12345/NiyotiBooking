@@ -31,9 +31,11 @@ async function loadBookings() {
     .map(
       (row) => `
       <tr>
-        <td>${row.CustomerName}</td>
-        <td>${row.CustomerEmail}</td>
-        <td>${row.PhoneNumber || ""}</td>
+        <td>${escapeHtml([row.CustomerTitle, row.CustomerName].filter(Boolean).join(" "))}</td>
+        <td>${escapeHtml(row.Gender || "")}</td>
+        <td>${escapeHtml(row.Profession || "")}</td>
+        <td>${escapeHtml(row.CustomerEmail)}</td>
+        <td>${escapeHtml(row.PhoneNumber || "")}</td>
         <td>${row.BookingDate}</td>
         <td>${formatTime12h(row.StartTime)}</td>
         <td>
@@ -42,7 +44,7 @@ async function loadBookings() {
         </td>
       </tr>
       <tr id="reschedule-row-${row.BookingId}" class="d-none">
-        <td colspan="6">
+        <td colspan="8">
           <div class="d-flex flex-wrap gap-2 align-items-center">
             <label class="small text-muted mb-0">Date</label>
             <select id="reschedule-date-${row.BookingId}" class="form-select form-select-sm" style="max-width: 200px"></select>

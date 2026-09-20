@@ -17,7 +17,7 @@ npm run db:schema      # apply server/sql/database.sql (creates the DB if missin
 npm run db:seed        # apply server/sql/seed_test_data.sql
 ```
 
-There is no test suite (`npm test` just prints a placeholder message) and no lint script configured.
+`npm run test:e2e` runs `server/tests/e2e.test.js` (25 HTTP tests against a throwaway `AppointmentBookingDB_test` MySQL database; the schema is re-applied each run). `npm test` is still a placeholder and there is no lint script.
 
 Health check: `curl http://localhost:3000/api/health` — returns healthy even if the DB is unreachable (degraded mode), so a 200 here doesn't guarantee DB connectivity.
 
@@ -95,3 +95,13 @@ Email (`services/emailService.js`, via nodemailer + SMTP) is the primary notific
 ### Client
 
 Plain multi-page HTML/CSS/JS under `client/`, served as static files by Express — no bundler, no framework. Each admin page (`admin-*.html`) has a matching script in `client/js/` (`admin.js`, `availability.js`, `bookings.js`, `events.js`) that calls the `/api/*` endpoints directly via `fetch`. `client/js/format-utils.js` holds shared formatting/UI helpers (e.g. `formatTime12h`, `showAlert`) used across pages. The public booking flow is `index.html` → `booking.html`, driven by `client/js/booking.js` against `/api/public/*`.
+
+### Slot generation and booking limits
+
+- `createWeeklyAvailability` accepts a date range of at most 7 days (each weekday then maps to one date); the admin UI shows only the weekdays inside the range, in date order, and on today's date defaults/clamps the start time to the next IST minute.
+- Customers can only see/book slots up to 14 days ahead (`listPublicAvailability` and `createPublicBooking`, `BOOKING_WINDOW_DAYS`).
+- One person (same email case-insensitively, OR same phone digits) may hold only one upcoming PENDING/CONFIRMED/RESCHEDULED booking; enforced in `createPublicBooking` under MySQL `GET_LOCK` locks to survive concurrent requests. Error code `DUPLICATE_BOOKING` (409).
+
+### Booking form fields (Title / Gender / Profession)
+
+`Bookings` has nullable `Title`, `Gender`, `Profession` columns (added by `server/sql/migrations/001_add_title_gender_profession.sql` for deployed DBs; already in `database.sql`). Allowed Title/Gender values live in `server/config/bookingOptions.js` and must match the `<select>` options in `client/booking.html`. The profession list is static (`client/js/professions.js`); "Other" sends the typed text. In query results the booking's title is aliased `CustomerTitle` because the events join also has a `Title` column. Free-text fields must be HTML-escaped when rendered (`escapeHtml` in `format-utils.js` / `emailService.js`). `npm run test:ui` runs browser automation (Playwright + installed Edge/Chrome) against the test DB.

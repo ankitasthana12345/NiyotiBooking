@@ -9,6 +9,8 @@
     "dev": "node server/server.js",
     "create-admin": "node server/utils/createAdmin.js",
     "db:schema": "node server/scripts/run_schema.js",
+    "test:e2e": "node --test server/tests/e2e.test.js",
+    "test:ui": "node --test server/tests/booking-ui.test.js",
     "db:seed": "node server/scripts/run_seed.js",
     "test": "node -e \"console.log('No automated tests configured yet')\""
   },
@@ -30,5 +32,8 @@
   },
   "allowScripts": {
     "bcrypt@6.0.0": true
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
   }
 }
