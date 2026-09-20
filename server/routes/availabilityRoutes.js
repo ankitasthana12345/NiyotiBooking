@@ -22,6 +22,13 @@ const availabilityValidators = [
 router.get("/settings", requireAuth, requireAdmin, availabilityController.getBookingSettings);
 router.put("/settings", requireAuth, requireAdmin, [body("minimumNoticeHours").isIn([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48])], validateRequest, availabilityController.updateBookingSettings);
 router.get("/", requireAuth, requireAdmin, [query("eventId").optional().isInt({ min: 1 })], validateRequest, availabilityController.listAvailability);
+router.get("/weekly", requireAuth, requireAdmin, (req, res) => {
+  res.status(405).json({
+    success: false,
+    message: "Use POST /api/availability/weekly with the weekly availability payload",
+    errorCode: "METHOD_NOT_ALLOWED",
+  });
+});
 router.get("/:eventId", requireAuth, requireAdmin, [param("eventId").isInt({ min: 1 })], validateRequest, availabilityController.getAvailabilityByEventId);
 router.post("/", requireAuth, requireAdmin, [body("eventId").isInt({ min: 1 }), ...availabilityValidators], validateRequest, availabilityController.createAvailability);
 router.post(
