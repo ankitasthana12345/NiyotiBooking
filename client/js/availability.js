@@ -40,8 +40,9 @@ const WEEK_DAYS = [
   { dow: 0, label: "Sunday" },
 ];
 
-// A range covers at most 7 days, so each weekday maps to exactly one calendar date.
-const MAX_RANGE_DAYS = 7;
+// A range of 7 days or fewer maps each weekday to exactly one calendar date, so only those
+// weekdays are shown. Longer ranges show all 7 weekdays (each repeats every week).
+const SINGLE_WEEK_DAYS = 7;
 
 function addDays(dateStr, days) {
   const d = new Date(`${dateStr}T00:00:00Z`);
@@ -50,9 +51,17 @@ function addDays(dateStr, days) {
 }
 
 // Dates in the chosen range, in order, e.g. Fri..Wed => Fri, Sat, Sun, Mon, Tue, Wed.
+function rangeLengthDays(startStr, endStr) {
+  return Math.round((new Date(`${endStr}T00:00:00Z`) - new Date(`${startStr}T00:00:00Z`)) / 86400000) + 1;
+}
+
 function datesInRange(startStr, endStr) {
+  if (rangeLengthDays(startStr, endStr) > SINGLE_WEEK_DAYS) {
+    // Longer than a week: every weekday is in play, Monday first, no single date to show.
+    return WEEK_DAYS.map((day) => ({ dateStr: null, dow: day.dow }));
+  }
   const dates = [];
-  for (let i = 0; i < MAX_RANGE_DAYS; i++) {
+  for (let i = 0; i < SINGLE_WEEK_DAYS; i++) {
     const dateStr = addDays(startStr, i);
     if (dateStr > endStr) break;
     dates.push({ dateStr, dow: new Date(`${dateStr}T00:00:00Z`).getUTCDay() });
@@ -65,6 +74,9 @@ function datesInRange(startStr, endStr) {
 function getTodayMinTime(dow) {
   const now = getNowIST();
   if (rangeStartDateInput.value !== now.dateStr) return null;
+  // Only a range of 7 days or fewer has a single "today" row; on longer ranges past times
+  // for today are simply skipped by the server while later weeks keep them.
+  if (rangeEndDateInput.value && rangeLengthDays(rangeStartDateInput.value, rangeEndDateInput.value) > SINGLE_WEEK_DAYS) return null;
   if (new Date(`${now.dateStr}T00:00:00Z`).getUTCDay() !== dow) return null;
   return Math.min(now.hour24 * 60 + now.minute + 1, 24 * 60 - 1);
 }
@@ -149,6 +161,8 @@ function addTimeRow(dow, defaults) {
   `;
 
   document.getElementById(`day-times-${dow}`).appendChild(row);
+  clampTodayRow(row, dow);
+  refreshTodayLimits(row, dow);
   computeRowEndTime(row);
   updateDayCountBadge(dow);
 }
@@ -177,12 +191,22 @@ function getRowStartTime24(row) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+// A slot must finish on the same day: EndTime is a plain time-of-day, so a slot that would end at
+// or after 12:00 AM would get an end time *earlier* than its start and break overlap/booking checks.
+function rowCrossesMidnight(row) {
+  return getRowStartMinutes(row) + Number(durationSelect.value) >= 24 * 60;
+}
+
 function computeRowEndTime(row) {
-  const [hours, minutes] = getRowStartTime24(row).split(":").map(Number);
-  const start = new Date(2000, 0, 1, hours, minutes);
-  const end = new Date(start.getTime() + Number(durationSelect.value) * 60000);
-  const endTime24 = `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
-  row.querySelector(".time-end").value = formatTime12h(endTime24);
+  const endInput = row.querySelector(".time-end");
+  if (rowCrossesMidnight(row)) {
+    endInput.value = "Past midnight";
+    endInput.classList.add("is-invalid");
+    return;
+  }
+  endInput.classList.remove("is-invalid");
+  const endMinutes = getRowStartMinutes(row) + Number(durationSelect.value);
+  endInput.value = formatTime12h(`${String(Math.floor(endMinutes / 60)).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`);
 }
 
 function computeAllDayEndTimes() {
@@ -218,14 +242,49 @@ function clampTodayRow(row, dow) {
   return true;
 }
 
+function to24h(hour12, period) {
+  return (hour12 % 12) + (period === "PM" ? 12 : 0);
+}
+
+// On today's date the hour / minute / AM-PM dropdowns simply don't offer past times: choices before
+// "now + 1 minute" are disabled, so the admin can't pick them in the first place.
+function refreshTodayLimits(row, dow) {
+  const hourSelect = row.querySelector(".time-hour");
+  const minuteSelect = row.querySelector(".time-minute");
+  const periodSelect = row.querySelector(".time-period");
+  const minToday = getTodayMinTime(dow);
+
+  row.querySelectorAll("option").forEach((option) => (option.disabled = false));
+  if (minToday === null) return;
+
+  const minHour = Math.floor(minToday / 60);
+  const minMinute = minToday % 60;
+
+  periodSelect.querySelectorAll("option").forEach((option) => {
+    if (option.value === "AM" && minHour >= 12) option.disabled = true;
+  });
+  const period = periodSelect.value;
+  hourSelect.querySelectorAll("option").forEach((option) => {
+    if (to24h(Number(option.value), period) < minHour) option.disabled = true;
+  });
+  const selectedHour24 = to24h(Number(hourSelect.value), period);
+  minuteSelect.querySelectorAll("option").forEach((option) => {
+    if (selectedHour24 === minHour && Number(option.value) < minMinute) option.disabled = true;
+  });
+}
+
 function clampAllTodayRows() {
   WEEK_DAYS.forEach((day) => {
     document.querySelectorAll(`#day-times-${day.dow} .time-row`).forEach((row) => {
       clampTodayRow(row, day.dow);
+      refreshTodayLimits(row, day.dow);
       computeRowEndTime(row);
     });
   });
 }
+
+// Time moves on while the page stays open, so keep the "no past times" limits current.
+setInterval(clampAllTodayRows, 30000);
 
 weeklyScheduleBox?.addEventListener("change", (event) => {
   const row = event.target.closest(".time-row");
@@ -234,6 +293,7 @@ weeklyScheduleBox?.addEventListener("change", (event) => {
   if (clampTodayRow(row, dow)) {
     showAlert(feedback, "Times today must start at least one minute from now — adjusted to the earliest available time.", "warning");
   }
+  refreshTodayLimits(row, dow);
   computeRowEndTime(row);
 });
 
@@ -247,17 +307,19 @@ function applyRangeToSchedule() {
   const ordered = rangeStartDateInput.value && rangeEndDateInput.value
     ? datesInRange(rangeStartDateInput.value, rangeEndDateInput.value)
     : [];
+  const inRangeDows = new Set(ordered.map((d) => d.dow));
   const dateByDow = new Map(ordered.map((d) => [d.dow, d.dateStr]));
 
   WEEK_DAYS.forEach((day) => {
     const block = weeklyScheduleBox.querySelector(`[data-day="${day.dow}"]`);
     const checkbox = document.getElementById(`day-enabled-${day.dow}`);
     const dateStr = dateByDow.get(day.dow);
+    const inRange = inRangeDows.has(day.dow);
 
-    block.hidden = !dateStr;
+    block.hidden = !inRange;
     document.getElementById(`day-date-${day.dow}`).textContent = dateStr ? `(${dateStr})` : "";
 
-    if (!dateStr) {
+    if (!inRange) {
       checkbox.checked = false;
       visibleDays.delete(day.dow);
     } else if (!visibleDays.has(day.dow)) {
@@ -270,6 +332,11 @@ function applyRangeToSchedule() {
   ordered.forEach((d) => weeklyScheduleBox.appendChild(weeklyScheduleBox.querySelector(`[data-day="${d.dow}"]`)));
 
   clampAllTodayRows();
+
+  // On a range longer than a week the weekday rows also apply to later weeks, so today's
+  // past times can't be blocked in the dropdowns; the server just skips today's past times.
+  const startsTodayLong = rangeStartDateInput.value === getNowIST().dateStr && ordered.length > 0 && ordered[0].dateStr === null;
+  document.getElementById("todayNote")?.classList.toggle("d-none", !startsTodayLong);
 }
 
 // Step 2 only becomes available once Step 1 (date range + duration) is fully filled in.
@@ -285,18 +352,14 @@ durationSelect?.addEventListener("change", updateStep2Visibility);
 rangeStartDateInput.min = getNowIST().dateStr;
 if (!rangeStartDateInput.value) rangeStartDateInput.value = getNowIST().dateStr;
 
+// The end date can be any day on or after the start date (no upper cap; the server allows up to a year).
 function syncRangeLimits() {
   const start = rangeStartDateInput.value;
   rangeEndDateInput.min = start;
-  rangeEndDateInput.max = start ? addDays(start, MAX_RANGE_DAYS - 1) : "";
+  rangeEndDateInput.removeAttribute("max");
 
-  if (start && rangeEndDateInput.value) {
-    if (rangeEndDateInput.value < start) {
-      rangeEndDateInput.value = start;
-    } else if (rangeEndDateInput.value > rangeEndDateInput.max) {
-      rangeEndDateInput.value = rangeEndDateInput.max;
-      showAlert(feedback, `A date range can cover at most ${MAX_RANGE_DAYS} days — end date adjusted.`, "warning");
-    }
+  if (start && rangeEndDateInput.value && rangeEndDateInput.value < start) {
+    rangeEndDateInput.value = start;
   }
 }
 
@@ -332,6 +395,67 @@ document.getElementById("saveNoticeHoursBtn")?.addEventListener("click", async (
   showAlert(feedback, result.message, response.ok ? "success" : "danger");
 });
 
+// Bulk-selection state: which slot ids are checked, and the last-loaded rows keyed by
+// id (so the bulk toolbar can tell whether any selected slot is currently disabled).
+const selectedIds = new Set();
+const slotsById = new Map();
+
+const selectAllCheckbox = document.getElementById("selectAllSlots");
+const bulkToolbar = document.getElementById("bulkToolbar");
+const bulkSelectedCount = document.getElementById("bulkSelectedCount");
+const bulkEnableBtn = document.getElementById("bulkEnableBtn");
+const emptySlotsMessage = document.getElementById("emptySlotsMessage");
+const toastContainer = document.getElementById("toastContainer");
+
+function slotRowHtml(row) {
+  const isDisabled = row.Status === "DISABLED";
+  return `
+    <tr class="${isDisabled ? "table-row-disabled" : ""}">
+      <td>
+        <input type="checkbox" class="form-check-input slot-checkbox" data-id="${row.AvailabilityId}"
+          aria-label="Select slot on ${row.AvailableDate} at ${formatTime12h(row.StartTime)}" />
+      </td>
+      <td>${row.AvailableDate}</td>
+      <td>${formatTime12h(row.StartTime)}</td>
+      <td>${formatTime12h(row.EndTime)}</td>
+      <td>
+        ${row.IsBooked ? `<span class="badge text-bg-success">Booked</span>` : `<span class="badge text-bg-secondary">Available</span>`}
+        ${isDisabled ? `<span class="badge text-bg-dark ms-1">Disabled</span>` : ""}
+      </td>
+      <td>
+        <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete" data-id="${row.AvailabilityId}" aria-label="Delete slot" title="Delete">&#128465;&#65039;</button>
+        ${
+          isDisabled
+            ? `<button type="button" class="btn btn-sm btn-outline-success" data-action="enable" data-id="${row.AvailabilityId}" aria-label="Enable slot" title="Enable">&#8635;</button>`
+            : `<button type="button" class="btn btn-sm btn-outline-secondary" data-action="disable" data-id="${row.AvailabilityId}" aria-label="Disable slot" title="Disable">&#10134;</button>`
+        }
+      </td>
+    </tr>
+  `;
+}
+
+function updateSelectAllState() {
+  if (!selectAllCheckbox) return;
+  const total = slotsById.size;
+  const checkedCount = selectedIds.size;
+  selectAllCheckbox.checked = total > 0 && checkedCount === total;
+  selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < total;
+}
+
+function updateBulkToolbar() {
+  const count = selectedIds.size;
+  if (count === 0) {
+    bulkToolbar.classList.add("d-none");
+    return;
+  }
+
+  bulkToolbar.classList.remove("d-none");
+  bulkSelectedCount.textContent = `${count} selected`;
+
+  const anyDisabled = [...selectedIds].some((id) => slotsById.get(id)?.Status === "DISABLED");
+  bulkEnableBtn.classList.toggle("d-none", !anyDisabled);
+}
+
 async function loadAvailability() {
   const response = await fetch("/api/availability", { credentials: "include" });
   const result = await response.json();
@@ -339,33 +463,25 @@ async function loadAvailability() {
 
   const slots = result.data.availability;
 
+  slotsById.clear();
+  slots.forEach((row) => slotsById.set(row.AvailabilityId, row));
+  // Drop selections for slots that no longer exist (deleted / disappeared on reload).
+  for (const id of selectedIds) {
+    if (!slotsById.has(id)) selectedIds.delete(id);
+  }
+
+  emptySlotsMessage?.classList.toggle("d-none", slots.length > 0);
+
   // Build each row's HTML once via array + join (avoids O(n^2) string concatenation),
   // then a single innerHTML assignment — O(n) overall for n slots.
-  listBody.innerHTML = slots
-    .map(
-      (row) => `
-      <tr>
-        <td>${row.AvailableDate}</td>
-        <td>${formatTime12h(row.StartTime)}</td>
-        <td>${formatTime12h(row.EndTime)}</td>
-        <td>
-          ${
-            row.IsBooked
-              ? `<span class="badge text-bg-success">Booked</span>`
-              : `<span class="badge text-bg-secondary">Available</span>`
-          }
-        </td>
-        <td>
-          ${
-            row.IsBooked
-              ? `<span class="text-muted small">—</span>`
-              : `<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete" data-id="${row.AvailabilityId}">Delete</button>`
-          }
-        </td>
-      </tr>
-    `
-    )
-    .join("");
+  listBody.innerHTML = slots.map(slotRowHtml).join("");
+
+  listBody.querySelectorAll(".slot-checkbox").forEach((checkbox) => {
+    checkbox.checked = selectedIds.has(Number(checkbox.dataset.id));
+  });
+
+  updateSelectAllState();
+  updateBulkToolbar();
 }
 
 async function deleteSlot(id) {
@@ -380,16 +496,157 @@ async function deleteSlot(id) {
   }
 
   showAlert(feedback, result.message, result.data?.fellBackToDisable ? "warning" : "success");
+  selectedIds.delete(id);
   loadAvailability();
 }
 
-// Single delegated listener handles Delete for every row — O(1) listeners regardless
-// of how many slots are rendered, instead of one listener per button.
+async function toggleSlotStatus(id, disable) {
+  const response = await fetch(`/api/availability/${id}/${disable ? "disable" : "enable"}`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const result = await response.json();
+
+  showAlert(feedback, result.message, response.ok ? "success" : "danger");
+  if (response.ok) loadAvailability();
+}
+
+// Single delegated listener handles Delete/Disable/Enable for every row — O(1) listeners
+// regardless of how many slots are rendered, instead of one listener per button.
 listBody?.addEventListener("click", (event) => {
-  const button = event.target.closest('button[data-action="delete"]');
-  if (!button) return;
-  deleteSlot(Number(button.dataset.id));
+  const deleteBtn = event.target.closest('button[data-action="delete"]');
+  if (deleteBtn) {
+    deleteSlot(Number(deleteBtn.dataset.id));
+    return;
+  }
+
+  const disableBtn = event.target.closest('button[data-action="disable"]');
+  if (disableBtn) {
+    toggleSlotStatus(Number(disableBtn.dataset.id), true);
+    return;
+  }
+
+  const enableBtn = event.target.closest('button[data-action="enable"]');
+  if (enableBtn) {
+    toggleSlotStatus(Number(enableBtn.dataset.id), false);
+  }
 });
+
+listBody?.addEventListener("change", (event) => {
+  const checkbox = event.target.closest(".slot-checkbox");
+  if (!checkbox) return;
+
+  const id = Number(checkbox.dataset.id);
+  if (checkbox.checked) selectedIds.add(id);
+  else selectedIds.delete(id);
+
+  updateSelectAllState();
+  updateBulkToolbar();
+});
+
+selectAllCheckbox?.addEventListener("change", (event) => {
+  const checked = event.target.checked;
+  listBody.querySelectorAll(".slot-checkbox").forEach((checkbox) => {
+    checkbox.checked = checked;
+    const id = Number(checkbox.dataset.id);
+    if (checked) selectedIds.add(id);
+    else selectedIds.delete(id);
+  });
+
+  updateSelectAllState();
+  updateBulkToolbar();
+});
+
+document.getElementById("bulkClearBtn")?.addEventListener("click", () => {
+  selectedIds.clear();
+  listBody.querySelectorAll(".slot-checkbox").forEach((checkbox) => (checkbox.checked = false));
+  updateSelectAllState();
+  updateBulkToolbar();
+});
+
+// Shows a small "N slots disabled/enabled" toast with an Undo link, auto-dismissed after
+// 5 seconds — mirrors Gmail's archive/delete undo pattern for the no-confirmation actions.
+let undoTimeoutHandle;
+function showUndoToast(message, undo) {
+  clearTimeout(undoTimeoutHandle);
+  toastContainer.innerHTML = `
+    <div class="admin-toast" role="status">
+      <span>${message}</span>
+      <button type="button" class="btn btn-sm btn-link p-0" id="toastUndoBtn">Undo</button>
+    </div>
+  `;
+
+  document.getElementById("toastUndoBtn")?.addEventListener("click", async () => {
+    clearTimeout(undoTimeoutHandle);
+    toastContainer.innerHTML = "";
+    await undo();
+  });
+
+  undoTimeoutHandle = setTimeout(() => {
+    toastContainer.innerHTML = "";
+  }, 5000);
+}
+
+async function bulkDelete() {
+  const ids = [...selectedIds];
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} slot(s)? This cannot be undone.`)) return;
+
+  const response = await fetch("/api/availability", {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const result = await response.json();
+
+  if (!response.ok) {
+    showAlert(feedback, result.message, "danger");
+    return;
+  }
+
+  const { deleted = [], disabled = [], notFound = [] } = result.data || {};
+  showAlert(feedback, result.message, disabled.length || notFound.length ? "warning" : "success");
+
+  selectedIds.clear();
+  await loadAvailability();
+}
+
+async function bulkSetStatus(isDisabled) {
+  const ids = [...selectedIds];
+  if (ids.length === 0) return;
+
+  const response = await fetch("/api/availability/status", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, isDisabled }),
+  });
+  const result = await response.json();
+
+  if (!response.ok) {
+    showAlert(feedback, result.message, "danger");
+    return;
+  }
+
+  const count = result.data?.updated ?? ids.length;
+  selectedIds.clear();
+  await loadAvailability();
+
+  showUndoToast(`${count} slot${count === 1 ? "" : "s"} ${isDisabled ? "disabled" : "enabled"}`, async () => {
+    await fetch("/api/availability/status", {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, isDisabled: !isDisabled }),
+    });
+    await loadAvailability();
+  });
+}
+
+document.getElementById("bulkDeleteBtn")?.addEventListener("click", bulkDelete);
+document.getElementById("bulkDisableBtn")?.addEventListener("click", () => bulkSetStatus(true));
+bulkEnableBtn?.addEventListener("click", () => bulkSetStatus(false));
 
 // The feedback box sits at the top of the page but the submit button is far below it,
 // so bring the message into view or the button looks like it did nothing.
@@ -402,6 +659,14 @@ availabilityForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   // "Now" may have moved on since the form was filled in.
   clampAllTodayRows();
+
+  const overMidnight = Array.from(document.querySelectorAll("#weeklySchedule > [data-day]:not([hidden]) .time-row")).filter(
+    (row) => document.getElementById(`day-enabled-${row.closest("[data-day]").dataset.day}`).checked && rowCrossesMidnight(row)
+  );
+  if (overMidnight.length > 0) {
+    showFormAlert("A slot can't run past midnight. Choose an earlier start time or a shorter duration for the rows marked \"Past midnight\".", "danger");
+    return;
+  }
 
   const weeklySchedule = WEEK_DAYS.map((day) => {
     const inRangeDay = !weeklyScheduleBox.querySelector(`[data-day="${day.dow}"]`).hidden;

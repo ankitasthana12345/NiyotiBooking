@@ -176,6 +176,7 @@ function customerBookingEmailHtml(booking) {
     footerHtml: `
       <p style="margin: 22px 0 4px; font-size: 14px; color: #444;">We look forward to speaking with you. If you need to reschedule or have any questions, just reply to this email.</p>
       <p style="margin: 18px 0 0; font-size: 14px; color: #444;">Warm regards,<br/><strong>${BRAND_NAME}</strong></p>
+      <p style="margin: 18px 0 0; font-size: 12px; color: #888;">${escapeHtml(PRIMARY_TIP_TEXT)}</p>
     `,
   });
 }
@@ -209,6 +210,21 @@ function plainTextSummary(booking) {
   return lines.join("\n");
 }
 
+// Shown as "Niyoti Shrivastava <address>" so mail looks personal (helps it land in Gmail's Primary
+// tab). Works with the existing config: EMAIL_FROM_NAME and EMAIL_REPLY_TO are optional, and an
+// EMAIL_FROM that already contains a display name ("Name <a@b.c>") is used as-is.
+function buildFromHeader() {
+  const configured = process.env.EMAIL_FROM || process.env.SMTP_USER;
+  if (!configured || configured.includes("<")) return configured;
+  const name = (process.env.EMAIL_FROM_NAME || BRAND_NAME).replace(/["\r\n]/g, "").trim();
+  return name ? `"${name}" <${configured}>` : configured;
+}
+
+// Gmail sorts mail into Primary/Promotions per recipient based on what they do with it; once a
+// customer drags one message to Primary and says "yes" to future messages, all later ones follow.
+const PRIMARY_TIP_TEXT =
+  "Tip: if this email landed in Promotions or Spam, please drag it to your Primary tab and choose \"Yes\" to do the same for future messages, so you never miss an update.";
+
 async function sendEmail({ to, subject, text, html }) {
   const transporter = createTransporter();
 
@@ -218,12 +234,14 @@ async function sendEmail({ to, subject, text, html }) {
   }
 
   const mailOptions = {
-    from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+    from: buildFromHeader(),
     to,
     subject,
     text,
     html,
   };
+  // Optional: replies go here instead of the sending address (e.g. a monitored inbox).
+  if (process.env.EMAIL_REPLY_TO) mailOptions.replyTo = process.env.EMAIL_REPLY_TO;
 
   const info = await transporter.sendMail(mailOptions);
   logger.info("Email sent", { to, subject, messageId: info.messageId });
@@ -253,7 +271,7 @@ async function sendBookingNotifications({ booking, customerSubject, adminSubject
     await sendEmail({
       to: booking.CustomerEmail,
       subject: customerSubject,
-      text: `${customerSubject}\n\n${plainTextSummary(booking)}`,
+      text: `${customerSubject}\n\n${plainTextSummary(booking)}\n\n${PRIMARY_TIP_TEXT}`,
       html: customerBookingEmailHtml(booking),
     });
   } catch (error) {

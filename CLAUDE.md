@@ -17,7 +17,7 @@ npm run db:schema      # apply server/sql/database.sql (creates the DB if missin
 npm run db:seed        # apply server/sql/seed_test_data.sql
 ```
 
-`npm run test:e2e` runs `server/tests/e2e.test.js` (25 HTTP tests against a throwaway `AppointmentBookingDB_test` MySQL database; the schema is re-applied each run). `npm test` is still a placeholder and there is no lint script.
+`npm run test:e2e` runs `server/tests/e2e.test.js` (36 HTTP tests against a throwaway `AppointmentBookingDB_test` MySQL database; the schema is re-applied each run). `npm test` is still a placeholder and there is no lint script.
 
 Health check: `curl http://localhost:3000/api/health` — returns healthy even if the DB is unreachable (degraded mode), so a 200 here doesn't guarantee DB connectivity.
 
@@ -100,8 +100,29 @@ Plain multi-page HTML/CSS/JS under `client/`, served as static files by Express 
 
 - `createWeeklyAvailability` accepts a date range of at most 7 days (each weekday then maps to one date); the admin UI shows only the weekdays inside the range, in date order, and on today's date defaults/clamps the start time to the next IST minute.
 - Customers can only see/book slots up to 14 days ahead (`listPublicAvailability` and `createPublicBooking`, `BOOKING_WINDOW_DAYS`).
-- One person (same email case-insensitively, OR same phone digits) may hold only one upcoming PENDING/CONFIRMED/RESCHEDULED booking; enforced in `createPublicBooking` under MySQL `GET_LOCK` locks to survive concurrent requests. Error code `DUPLICATE_BOOKING` (409).
+- (Superseded by the Slots allowance below: a customer may hold up to SlotsAllowed bookings; the old one-upcoming-booking rule is gone.)
 
 ### Booking form fields (Title / Gender / Profession)
 
 `Bookings` has nullable `Title`, `Gender`, `Profession` columns (added by `server/sql/migrations/001_add_title_gender_profession.sql` for deployed DBs; already in `database.sql`). Allowed Title/Gender values live in `server/config/bookingOptions.js` and must match the `<select>` options in `client/booking.html`. The profession list is static (`client/js/professions.js`); "Other" sends the typed text. In query results the booking's title is aliased `CustomerTitle` because the events join also has a `Title` column. Free-text fields must be HTML-escaped when rendered (`escapeHtml` in `format-utils.js` / `emailService.js`). `npm run test:ui` runs browser automation (Playwright + installed Edge/Chrome) against the test DB.
+
+### Minimum booking notice (admin-configurable)
+
+Public slots must start MORE than 24 hours from now (IST) and within the 14-day window. `MIN_NOTICE_HOURS_FLOOR` / `effectiveNoticeHours()` in `server/config/bookingOptions.js` enforce the floor in both `listPublicAvailability` and `createPublicBooking`; the admin setting can only be 24, 36 or 48 (any smaller value already stored in `BookingSettings` is treated as 24). Local MySQL is started with `C:\Users\ankit\start-mysql.ps1`; `npm run test:e2e` (36 tests) and `npm run test:ui` (7) need it running.
+
+### Customer slots (session allowance)
+
+`Bookings.SlotsAllowed` (1-10, default 2; migration `002_add_slots_allowed.sql`) is the number of sessions a customer (same email OR phone) may book in total. Used = all their PENDING/CONFIRMED/RESCHEDULED bookings (cancelled/rejected give the slot back). `createPublicBooking` refuses with `SLOTS_EXHAUSTED` ("Your slots are over. Please contact the admin."); new bookings inherit the customer's current allowance. The admin table's Slots column calls `PUT /api/bookings/:id/slots`, which updates every booking of that customer. Run migrations 001 then 002 on any existing database. Tests: 44 API (`npm run test:e2e`) + 9 browser (`npm run test:ui`).
+
+Note: the earlier "one upcoming booking per person" rule was removed once Slots existed; the Slots allowance (default 2, admin 1-10) is now the only per-customer cap, so one customer can hold several upcoming bookings up to that number.
+
+Update: the minimum notice is now admin-chosen from 30 min, 1, 2, 4, 6, 8, 10, 12, 18, 24 (default), 36, 48, 60, 72 hours (`ALLOWED_NOTICE_HOURS`); the 24h floor described above was removed. It is stored in `BookingSettings.MinimumNoticeHours` as DECIMAL(5,1) (migration `003_notice_hours_decimal.sql`, needed for 30 min = 0.5) and applied as whole minutes in SQL. Date ranges for slot generation may be up to 366 days again; the admin UI shows only the in-range weekdays when the range is 7 days or fewer, and all 7 weekdays for longer ranges.
+
+Slot generation form: on a range of 7 days or fewer that starts today, today's weekday row never offers past times (hour/minute/AM-PM options before "now + 1 minute" IST are disabled, default = next minute, re-checked every 30 s and on submit). A slot must end before midnight (`endMinutes >= 24*60` is rejected in `createWeeklyAvailability`; the UI marks such rows "Past midnight" and blocks submit) because `EndTime` is a plain TIME and would wrap to an end earlier than the start.
+
+### Bulk slot selection (admin-availability.html) and booking star (admin-bookings.html)
+
+- `admin-availability.html` has Gmail-style bulk selection: a checkbox per row plus a header "select all" (tri-state: checked/unchecked/indeterminate), a bulk toolbar (Delete / Disable / Enable / Clear selection) that only shows once 1+ rows are checked, and per-row Delete/Disable/Enable icon buttons for single-slot actions. Disabled rows are greyed out (`.table-row-disabled`) with a "Disabled" badge; disabling/enabling shows a 5-second "N slots disabled" toast with Undo (`#toastContainer`, `client/css/admin.css`'s `.admin-toast`), no confirm dialog. Delete does confirm ("Delete N slot(s)? This cannot be undone.").
+- Backend: `DELETE /api/availability` (body `{ ids }`) loops per-id (not a single bulk `DELETE ... WHERE IN`) so that a slot with booking history — blocked by the `Availability`→`Bookings` FK — falls back to disabling it instead, exactly like the existing single-item `deleteAvailability`, without rolling back the rest of the batch; response reports `{ deleted, disabled, notFound }`. `PATCH /api/availability/status` (body `{ ids, isDisabled }`) is a single `UPDATE ... WHERE IN` since no FK fallback is needed there. Both are in `availabilityController.js` / `availabilityRoutes.js`. There's no new status field to migrate — `Availability.Status` (`ENABLED`/`DISABLED`/`BLOCKED`) already existed and `listPublicAvailability` already filtered to `Status = 'ENABLED'`, so disabling a slot already hid it from the public booking page and blocked booking it (`bookingService.js`'s `SlotStatus !== "ENABLED"` check) before this feature was added.
+- `admin-bookings.html` has a star (☆/★) button per row (`Bookings.IsStarred`, migration `004_add_is_starred.sql`, default `FALSE`). Click is optimistic (flips instantly, reverts on a failed API call) via `PATCH /api/bookings/:id/star` (body `{ isStarred }`). `GET /api/bookings` accepts `starredOnly=true` and also always returns `IsStarred`; the client sorts starred rows to the top with a stable `Array#sort` (ties keep the server's `BookingDate`/`StartTime DESC` order) rather than changing the SQL `ORDER BY`.
+- Tests: 57 API (`npm run test:e2e`) + 16 browser (`npm run test:ui`). The Playwright file logs in as admin many times over its history (`POST /api/auth/login` is rate-limited to 10/15min by `app.js`'s `loginLimiter`), so tests added after UI-11 share one authenticated page/context (`adminPage()` in `booking-ui.test.js`) instead of logging in per test — keep doing this for any further additions to that file rather than opening a fresh admin login per test.

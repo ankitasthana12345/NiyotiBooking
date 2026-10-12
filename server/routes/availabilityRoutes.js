@@ -1,6 +1,7 @@
 const express = require("express");
 const { body, param, query } = require("express-validator");
 const availabilityController = require("../controllers/availabilityController");
+const { ALLOWED_NOTICE_HOURS } = require("../config/bookingOptions");
 const { requireAuth } = require("../middleware/authMiddleware");
 const { requireAdmin } = require("../middleware/adminMiddleware");
 const { validateRequest } = require("../middleware/validationMiddleware");
@@ -20,7 +21,7 @@ const availabilityValidators = [
 ];
 
 router.get("/settings", requireAuth, requireAdmin, availabilityController.getBookingSettings);
-router.put("/settings", requireAuth, requireAdmin, [body("minimumNoticeHours").isIn([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48])], validateRequest, availabilityController.updateBookingSettings);
+router.put("/settings", requireAuth, requireAdmin, [body("minimumNoticeHours").isIn(ALLOWED_NOTICE_HOURS)], validateRequest, availabilityController.updateBookingSettings);
 router.get("/", requireAuth, requireAdmin, [query("eventId").optional().isInt({ min: 1 })], validateRequest, availabilityController.listAvailability);
 router.get("/weekly", requireAuth, requireAdmin, (req, res) => {
   res.status(405).json({
@@ -52,6 +53,22 @@ router.post(
   availabilityController.createWeeklyAvailability
 );
 router.post("/disable-all", requireAuth, requireAdmin, availabilityController.disableAllAvailability);
+router.delete(
+  "/",
+  requireAuth,
+  requireAdmin,
+  [body("ids").isArray({ min: 1, max: 500 }), body("ids.*").isInt({ min: 1 })],
+  validateRequest,
+  availabilityController.bulkDeleteAvailability
+);
+router.patch(
+  "/status",
+  requireAuth,
+  requireAdmin,
+  [body("ids").isArray({ min: 1, max: 500 }), body("ids.*").isInt({ min: 1 }), body("isDisabled").isBoolean()],
+  validateRequest,
+  availabilityController.bulkUpdateAvailabilityStatus
+);
 router.put("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 }), ...availabilityValidators], validateRequest, availabilityController.updateAvailability);
 router.delete("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, availabilityController.deleteAvailability);
 router.post("/:id/enable", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, availabilityController.enableAvailability);

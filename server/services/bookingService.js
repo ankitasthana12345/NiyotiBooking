@@ -1,5 +1,6 @@
 const { randomUUID, createHash } = require("crypto");
 const { getPool } = require("../config/db");
+const { noticeMinutes, DEFAULT_SLOTS } = require("../config/bookingOptions");
 
 async function getBookingById(bookingId) {
   const pool = await getPool();
@@ -13,6 +14,7 @@ async function getBookingById(bookingId) {
         b."Title" AS "CustomerTitle",
         b."Gender",
         b."Profession",
+        b."SlotsAllowed",
         b."CustomerEmail",
         b."PhoneNumber",
         b."Message",
@@ -78,20 +80,41 @@ async function acquirePersonLocks(client, names) {
   return acquired;
 }
 
-async function hasUpcomingBookingForPerson(queryable, email, phoneDigits) {
-  const result = await queryable.query(
-    `SELECT "BookingId"
-       FROM "Bookings"
-      WHERE "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
-        AND TIMESTAMP("BookingDate", "StartTime") > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE)
-        AND (
-          LOWER("CustomerEmail") = $1
-          OR ($2 <> '' AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("PhoneNumber", ' ', ''), '+', ''), '-', ''), '(', ''), ')', '') = $2)
-        )
-      LIMIT 1`,
+// SQL for a phone column with formatting stripped, so "+91 98765-43210" == "+919876543210".
+function phoneDigitsSql(column) {
+  return `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${column}, ' ', ''), '+', ''), '-', ''), '(', ''), ')', '')`;
+}
+
+// A customer's session allowance ("slots") and how many they have used. Used = every
+// PENDING/CONFIRMED/RESCHEDULED booking they ever made; cancelled/rejected ones give the slot back.
+// The allowance is the one on their most recent booking (the admin edit updates all of them).
+async function getPersonSlotUsage(queryable, email, phoneDigits) {
+  const match = `(LOWER("CustomerEmail") = $1 OR ($2 <> '' AND ${phoneDigitsSql('"PhoneNumber"')} = $2))`;
+  const latest = await queryable.query(
+    `SELECT "SlotsAllowed" FROM "Bookings" WHERE ${match} ORDER BY "BookingId" DESC LIMIT 1`,
     [email, phoneDigits]
   );
-  return result.rows.length > 0;
+  const used = await queryable.query(
+    `SELECT COUNT(*) AS "n" FROM "Bookings" WHERE "Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED') AND ${match}`,
+    [email, phoneDigits]
+  );
+  return { allowed: Number(latest.rows[0]?.SlotsAllowed ?? DEFAULT_SLOTS), used: Number(used.rows[0].n) };
+}
+
+// Sets the allowance on every booking that belongs to the same person as `bookingId`.
+async function setSlotsAllowedForBooking(bookingId, slots) {
+  const pool = await getPool();
+  const found = await pool.query('SELECT "CustomerEmail", "PhoneNumber" FROM "Bookings" WHERE "BookingId" = $1', [bookingId]);
+  if (found.rows.length === 0) return null;
+
+  const email = normalizeEmail(found.rows[0].CustomerEmail);
+  const phoneDigits = normalizePhone(found.rows[0].PhoneNumber);
+  await pool.query(
+    `UPDATE "Bookings" SET "SlotsAllowed" = $1
+      WHERE LOWER("CustomerEmail") = $2 OR ($3 <> '' AND ${phoneDigitsSql('"PhoneNumber"')} = $3)`,
+    [slots, email, phoneDigits]
+  );
+  return getBookingById(bookingId);
 }
 
 // Ported from the SQL Server dbo.sp_CreatePublicBooking stored procedure: same
@@ -114,7 +137,7 @@ async function createPublicBooking({
   const pool = await getPool();
 
   const settingsResult = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
-  const minimumNoticeHours = settingsResult.rows[0]?.MinimumNoticeHours ?? 24;
+  const minimumNoticeMinutes = noticeMinutes(settingsResult.rows[0]?.MinimumNoticeHours);
 
   const email = normalizeEmail(customerEmail);
   const phoneDigits = normalizePhone(phoneNumber);
@@ -133,7 +156,7 @@ async function createPublicBooking({
           av."MeetingPlatform", av."MeetingLink",
           ce."RequiresApproval", ce."IsActive" AS "IsEventActive",
           TIMESTAMP(av."AvailableDate", av."StartTime") <= DATE_ADD(
-            DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL $3 HOUR
+            DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL $3 MINUTE
           ) AS "NoticeViolated",
           av."AvailableDate" > DATE(
             DATE_ADD(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL ${BOOKING_WINDOW_DAYS} DAY)
@@ -142,7 +165,7 @@ async function createPublicBooking({
         INNER JOIN "ConsultationEvents" ce ON ce."EventId" = av."EventId"
         WHERE av."AvailabilityId" = $1 AND av."EventId" = $2
         FOR UPDATE OF av`,
-      [availabilityId, eventId, minimumNoticeHours]
+      [availabilityId, eventId, minimumNoticeMinutes]
     );
 
     const slot = slotResult.rows[0];
@@ -163,8 +186,9 @@ async function createPublicBooking({
       throw new Error("This slot is outside the two-week booking window.");
     }
 
-    if (await hasUpcomingBookingForPerson(client, email, phoneDigits)) {
-      throw new Error("You already have an upcoming appointment with this email or phone number.");
+    const usage = await getPersonSlotUsage(client, email, phoneDigits);
+    if (usage.used >= usage.allowed) {
+      throw new Error("Your slots are over. Please contact the admin.");
     }
 
     const duplicateResult = await client.query(
@@ -187,9 +211,9 @@ async function createPublicBooking({
     // the hosted DB), so it's generated here.
     const insertResult = await client.query(
       `INSERT INTO "Bookings"
-        ("EventId", "AvailabilityId", "CustomerName", "Title", "Gender", "Profession", "CustomerEmail", "PhoneNumber", "Message",
+        ("EventId", "AvailabilityId", "CustomerName", "Title", "Gender", "Profession", "SlotsAllowed", "CustomerEmail", "PhoneNumber", "Message",
          "BookingDate", "StartTime", "EndTime", "MeetingPlatform", "MeetingLink", "Status", "BookingReference")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        RETURNING "BookingId"`,
       [
         eventId,
@@ -198,6 +222,7 @@ async function createPublicBooking({
         title || null,
         gender || null,
         profession ? String(profession).trim() : null,
+        usage.allowed,
         customerEmail,
         phoneNumber || null,
         message || null,
@@ -314,5 +339,7 @@ module.exports = {
   getBookingById,
   createPublicBooking,
   updateBookingStatus,
+  setSlotsAllowedForBooking,
+  phoneDigitsSql,
   rescheduleBooking,
 };

@@ -28,36 +28,34 @@
           <div class="col-md-4">
             <label class="form-label">Minimum Booking Notice</label>
             <select id="minimumNoticeHours" class="form-select">
-              <option value="0">0 hours</option>
+              <option value="0.5">30 min</option>
               <option value="1">1 hour</option>
               <option value="2">2 hours</option>
-              <option value="3">3 hours</option>
               <option value="4">4 hours</option>
-              <option value="5">5 hours</option>
               <option value="6">6 hours</option>
-              <option value="7">7 hours</option>
               <option value="8">8 hours</option>
-              <option value="9">9 hours</option>
               <option value="10">10 hours</option>
-              <option value="11">11 hours</option>
               <option value="12">12 hours</option>
+              <option value="18">18 hours</option>
               <option value="24" selected>24 hours</option>
               <option value="36">36 hours</option>
               <option value="48">48 hours</option>
+              <option value="60">60 hours</option>
+              <option value="72">72 hours</option>
             </select>
           </div>
           <div class="col-md-2">
             <button id="saveNoticeHoursBtn" class="btn btn-primary" type="button">Save</button>
           </div>
           <div class="col-12">
-            <p class="text-muted mb-0 small">Customers can only book a slot that is at least this many hours away from right now.</p>
+            <p class="text-muted mb-0 small">Customers can only book a slot that starts MORE than this long from now, and no more than 2 weeks ahead.</p>
           </div>
         </div>
       </div>
 
       <form id="availabilityForm" class="card p-3 mb-4">
         <h2 class="h5">Generate Slots</h2>
-        <p class="text-muted small mb-3">Step 1: set the date range (up to 7 days) and slot length. Step 2: only the weekdays inside your range are shown (in date order) &mdash; add each time of day you want a slot at (any hour, AM or PM) &mdash; end time is worked out from the duration automatically.</p>
+        <p class="text-muted small mb-3">Step 1: set the date range (any future end date) and slot length. Step 2: for a range of 7 days or fewer only the weekdays inside it are shown (in date order), for longer ranges all 7 weekdays are shown &mdash; add each time of day you want a slot at (any hour, AM or PM) &mdash; end time is worked out from the duration automatically.</p>
         <div class="row g-3">
           <div class="col-md-3"><label class="form-label">Start Date</label><input id="rangeStartDate" type="date" class="form-control" required /></div>
           <div class="col-md-3"><label class="form-label">End Date</label><input id="rangeEndDate" type="date" class="form-control" required /></div>
@@ -92,6 +90,7 @@
         <p id="step2Placeholder" class="text-muted mb-0">Fill in Start Date, End Date and Duration above to continue to Step 2.</p>
         <div id="step2Section" hidden>
           <h3 class="h6 mb-3">Step 2 &mdash; Weekly Schedule</h3>
+          <p id="todayNote" class="small text-muted d-none">Times that have already passed today are skipped for today's date; the same times still apply to the following weeks.</p>
           <div id="weeklySchedule" class="d-flex flex-column gap-2"></div>
           <div class="col-12 mt-3"><button class="btn btn-primary" type="submit">Generate Weekly Slots</button></div>
         </div>
@@ -99,14 +98,31 @@
 
       <div class="card p-3">
         <h2 class="h5">Slots</h2>
+        <div id="bulkToolbar" class="d-none d-flex align-items-center flex-wrap gap-2 mb-2 p-2 rounded bulk-toolbar">
+          <span id="bulkSelectedCount" class="fw-semibold small me-1"></span>
+          <button type="button" id="bulkDeleteBtn" class="btn btn-sm btn-outline-danger">Delete</button>
+          <button type="button" id="bulkDisableBtn" class="btn btn-sm btn-outline-secondary">Disable</button>
+          <button type="button" id="bulkEnableBtn" class="btn btn-sm btn-outline-success d-none">Enable</button>
+          <button type="button" id="bulkClearBtn" class="btn btn-sm btn-link">Clear selection</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-striped align-middle">
-            <thead><tr><th>Date</th><th>Start</th><th>End</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead>
+              <tr>
+                <th style="width: 36px">
+                  <input type="checkbox" class="form-check-input" id="selectAllSlots" aria-label="Select all slots" />
+                </th>
+                <th>Date</th><th>Start</th><th>End</th><th>Status</th><th>Actions</th>
+              </tr>
+            </thead>
             <tbody id="availabilityBody"></tbody>
           </table>
         </div>
+        <p id="emptySlotsMessage" class="text-muted text-center mb-0 d-none">No slots available.</p>
       </div>
     </main>
+
+    <div id="toastContainer" class="admin-toast-container" aria-live="polite"></div>
 
     <script src="/js/format-utils.js"></script>
     <script src="/js/availability.js"></script>

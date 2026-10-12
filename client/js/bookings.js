@@ -13,12 +13,22 @@ const feedback = document.getElementById("feedback");
 let openRescheduleId = null;
 let rescheduleSlotsByBooking = {};
 
+const DEFAULT_SLOTS = 2;
+
+// Slots default to 2 whenever the server has no valid value yet (older rows / older API).
+function slotsAllowedOf(row) {
+  const n = Number(row.SlotsAllowed);
+  return Number.isInteger(n) && n >= 1 && n <= 10 ? n : DEFAULT_SLOTS;
+}
+
 async function loadBookings() {
   const status = document.getElementById("statusFilter").value;
   const q = document.getElementById("q").value.trim();
+  const starredOnly = document.getElementById("starredOnlyFilter")?.checked;
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   if (q) params.set("q", q);
+  if (starredOnly) params.set("starredOnly", "true");
 
   const response = await fetch(`/api/bookings?${params.toString()}`, { credentials: "include" });
   const result = await response.json();
@@ -27,10 +37,18 @@ async function loadBookings() {
   openRescheduleId = null;
   rescheduleSlotsByBooking = {};
 
-  listBody.innerHTML = result.data.bookings
+  // Starred bookings float to the top; Array#sort is stable, so ties keep the
+  // server's existing BookingDate/StartTime DESC order.
+  const bookings = [...result.data.bookings].sort((a, b) => (b.IsStarred ? 1 : 0) - (a.IsStarred ? 1 : 0));
+
+  listBody.innerHTML = bookings
     .map(
       (row) => `
       <tr>
+        <td>
+          <button type="button" class="star-btn ${row.IsStarred ? "starred" : ""}" data-action="toggle-star" data-id="${row.BookingId}"
+            aria-label="${row.IsStarred ? "Unstar booking" : "Star booking"}" aria-pressed="${row.IsStarred ? "true" : "false"}">${row.IsStarred ? "★" : "☆"}</button>
+        </td>
         <td>${escapeHtml([row.CustomerTitle, row.CustomerName].filter(Boolean).join(" "))}</td>
         <td>${escapeHtml(row.Gender || "")}</td>
         <td>${escapeHtml(row.Profession || "")}</td>
@@ -38,13 +56,24 @@ async function loadBookings() {
         <td>${escapeHtml(row.PhoneNumber || "")}</td>
         <td>${row.BookingDate}</td>
         <td>${formatTime12h(row.StartTime)}</td>
+        <td style="min-width: 150px">
+          <div class="d-flex gap-1 align-items-center">
+            <select id="slots-select-${row.BookingId}" class="form-select form-select-sm" style="width: 72px" aria-label="Slots">
+              ${Array.from({ length: 10 }, (_, i) => i + 1)
+                .map((n) => `<option value="${n}" ${n === slotsAllowedOf(row) ? "selected" : ""}>${n}</option>`)
+                .join("")}
+            </select>
+            <button type="button" class="btn btn-sm btn-outline-primary" data-action="save-slots" data-id="${row.BookingId}">Save</button>
+          </div>
+          <div class="small ${(Number(row.SlotsUsed) || 0) >= slotsAllowedOf(row) ? "text-danger fw-semibold" : "text-muted"}">${(Number(row.SlotsUsed) || 0)} of ${slotsAllowedOf(row)} used${(Number(row.SlotsUsed) || 0) >= slotsAllowedOf(row) ? " — slots over" : ""}</div>
+        </td>
         <td>
           <button type="button" class="btn btn-sm btn-outline-danger" data-action="reject" data-id="${row.BookingId}">Reject</button>
           <button type="button" class="btn btn-sm btn-outline-secondary" data-action="toggle-reschedule" data-id="${row.BookingId}" data-event-id="${row.EventId}">Reschedule</button>
         </td>
       </tr>
       <tr id="reschedule-row-${row.BookingId}" class="d-none">
-        <td colspan="8">
+        <td colspan="10">
           <div class="d-flex flex-wrap gap-2 align-items-center">
             <label class="small text-muted mb-0">Date</label>
             <select id="reschedule-date-${row.BookingId}" class="form-select form-select-sm" style="max-width: 200px"></select>
@@ -58,6 +87,39 @@ async function loadBookings() {
     `
     )
     .join("");
+}
+
+// Optimistic star toggle: flips the icon immediately, then reverts it if the API call fails.
+async function toggleStar(id, button) {
+  const wasStarred = button.classList.contains("starred");
+  const nextStarred = !wasStarred;
+
+  applyStarState(button, nextStarred);
+
+  const response = await fetch(`/api/bookings/${id}/star`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ isStarred: nextStarred }),
+  });
+
+  if (!response.ok) {
+    applyStarState(button, wasStarred);
+    let message = "Could not update star";
+    try {
+      message = (await response.json()).message || message;
+    } catch {
+      // ignore parse failure, keep default message
+    }
+    showAlert(feedback, message, "danger");
+  }
+}
+
+function applyStarState(button, starred) {
+  button.classList.toggle("starred", starred);
+  button.textContent = starred ? "★" : "☆";
+  button.setAttribute("aria-label", starred ? "Unstar booking" : "Star booking");
+  button.setAttribute("aria-pressed", starred ? "true" : "false");
 }
 
 // Builds quick "click to notify" links for the customer — WhatsApp (wa.me, pre-filled
@@ -82,6 +144,19 @@ function buildNotifyLinksHtml(booking, message) {
       ${digits ? `<a href="tel:+${digits}" class="btn btn-sm btn-outline-secondary">Call ${booking.PhoneNumber}</a>` : ""}
     </div>
   `;
+}
+
+async function saveSlots(id) {
+  const slots = Number(document.getElementById(`slots-select-${id}`).value);
+  const response = await fetch(`/api/bookings/${id}/slots`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slots }),
+  });
+  const result = await response.json();
+  showAlert(feedback, response.ok ? `Slots saved: ${slots} for this customer.` : result.message, response.ok ? "success" : "danger");
+  if (response.ok) loadBookings();
 }
 
 async function reject(id) {
@@ -175,12 +250,8 @@ async function confirmReschedule(id) {
     return;
   }
 
-  const booking = result.data.booking;
-  const notifyHtml = buildNotifyLinksHtml(
-    booking,
-    `your booking has been rescheduled to ${booking.BookingDate} at ${formatTime12h(booking.StartTime)}. Let us know if this works for you.`
-  );
-  showAlert(feedback, `${result.message}${notifyHtml}`, "success", 0);
+  // The customer is emailed automatically on reschedule, so no manual "Notify customer" links here.
+  showAlert(feedback, result.message, "success");
   closeReschedule(id);
   loadBookings();
 }
@@ -191,6 +262,12 @@ listBody?.addEventListener("click", (event) => {
 
   const id = Number(button.dataset.id);
   switch (button.dataset.action) {
+    case "toggle-star":
+      toggleStar(id, button);
+      break;
+    case "save-slots":
+      saveSlots(id);
+      break;
     case "reject":
       reject(id);
       break;
@@ -218,6 +295,7 @@ document.getElementById("searchBtn")?.addEventListener("click", loadBookings);
 
 // Status filter re-loads the instant it's changed — no button needed.
 document.getElementById("statusFilter")?.addEventListener("change", loadBookings);
+document.getElementById("starredOnlyFilter")?.addEventListener("change", loadBookings);
 
 // Search box filters live as you type, debounced so it doesn't fire on every keystroke.
 let searchDebounceTimer;

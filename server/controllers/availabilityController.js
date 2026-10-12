@@ -1,5 +1,6 @@
 const { getPool } = require("../config/db");
 const logger = require("../config/logger");
+const { ALLOWED_NOTICE_HOURS, effectiveNoticeHours, noticeMinutes } = require("../config/bookingOptions");
 const asyncHandler = require("../utils/asyncHandler");
 const { successResponse, errorResponse } = require("../utils/apiResponse");
 
@@ -270,7 +271,7 @@ const createAvailability = asyncHandler(async (req, res) => {
 
 const ALLOWED_DURATIONS = [15, 30, 45, 60, 90, 120];
 const TIME_24H_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
-const MAX_RANGE_DAYS = 7;
+const MAX_RANGE_DAYS = 366;
 const DAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 const createWeeklyAvailability = asyncHandler(async (req, res) => {
@@ -307,8 +308,6 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
   }
 
   const dayCount = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
-  // A range of at most 7 days maps each weekday to exactly one calendar date, so the
-  // weekly schedule below is unambiguous (Mon-Fri = 5 dates, Fri-Wed = Fri..Wed).
   if (dayCount > MAX_RANGE_DAYS) {
     return errorResponse(res, `Date range is too large (max ${MAX_RANGE_DAYS} days)`, "RANGE_TOO_LARGE", 400);
   }
@@ -353,8 +352,9 @@ const createWeeklyAvailability = asyncHandler(async (req, res) => {
         if (`${dateStr}T${time}` > nowIST) {
           const [h, m] = time.split(":").map(Number);
           const endMinutes = h * 60 + m + duration;
-          if (endMinutes > 24 * 60) {
-            // A slot can't run past midnight (EndTime would be earlier than StartTime).
+          if (endMinutes >= 24 * 60) {
+            // A slot must end before midnight: EndTime is a plain TIME, so an end at or after
+            // 24:00 would wrap to 00:xx and be *earlier* than StartTime, breaking the overlap check.
             skipped.push({ date: dateStr, startTime: time, reason: PAST_MIDNIGHT_REASON });
             continue;
           }
@@ -535,6 +535,84 @@ const deleteAvailability = asyncHandler(async (req, res) => {
   }
 });
 
+// Bulk delete: mirrors deleteAvailability's per-slot fallback (a slot with booking
+// history can't be hard-deleted because of the Availability->Bookings FK, so it's
+// disabled instead) but applied to a whole id list in one request. Looping per-id
+// (rather than one DELETE ... WHERE IN) is required so a single booked slot in the
+// batch doesn't roll back the deletes for the rest of the list.
+const bulkDeleteAvailability = asyncHandler(async (req, res) => {
+  const ids = [...new Set((req.body.ids || []).map(Number))];
+  const pool = await getPool();
+
+  const deletedIds = [];
+  const disabledIds = [];
+  const notFoundIds = [];
+
+  for (const id of ids) {
+    try {
+      const result = await pool.query('DELETE FROM "Availability" WHERE "AvailabilityId" = $1', [id]);
+      if (result.rowCount === 0) {
+        notFoundIds.push(id);
+      } else {
+        deletedIds.push(id);
+      }
+    } catch (error) {
+      if (error.code !== "23503") throw error;
+
+      const disableResult = await pool.query(
+        `UPDATE "Availability" SET "Status" = 'DISABLED', "UpdatedDate" = UTC_TIMESTAMP() WHERE "AvailabilityId" = $1`,
+        [id]
+      );
+      if (disableResult.rowCount === 0) {
+        notFoundIds.push(id);
+      } else {
+        disabledIds.push(id);
+      }
+    }
+  }
+
+  let message = `${deletedIds.length} slot${deletedIds.length === 1 ? "" : "s"} deleted`;
+  if (disabledIds.length) {
+    message += `, ${disabledIds.length} had booking history and were disabled instead`;
+  }
+  if (notFoundIds.length) {
+    message += `, ${notFoundIds.length} were already gone`;
+  }
+
+  return successResponse(res, message, {
+    deleted: deletedIds,
+    disabled: disabledIds,
+    notFound: notFoundIds,
+    succeeded: deletedIds.length + disabledIds.length,
+    skipped: notFoundIds.length,
+  });
+});
+
+// Bulk enable/disable: a single UPDATE ... WHERE IN is safe here (no FK fallback
+// needed, unlike delete), so ids that don't exist are just reflected in a lower
+// rowCount rather than needing a per-id loop.
+const bulkUpdateAvailabilityStatus = asyncHandler(async (req, res) => {
+  const ids = [...new Set((req.body.ids || []).map(Number))];
+  const isDisabled = Boolean(req.body.isDisabled);
+  const newStatus = isDisabled ? "DISABLED" : "ENABLED";
+  const pool = await getPool();
+
+  const result = await pool.query(
+    `UPDATE "Availability" SET "Status" = $1, "UpdatedDate" = UTC_TIMESTAMP() WHERE "AvailabilityId" IN ($2)`,
+    [newStatus, ids]
+  );
+
+  return successResponse(
+    res,
+    `${result.rowCount} slot${result.rowCount === 1 ? "" : "s"} ${isDisabled ? "disabled" : "enabled"}`,
+    {
+      updated: result.rowCount,
+      skipped: ids.length - result.rowCount,
+      status: newStatus,
+    }
+  );
+});
+
 const disableAllAvailability = asyncHandler(async (req, res) => {
   const pool = await getPool();
   const result = await pool.query(
@@ -579,13 +657,11 @@ const disableAvailability = asyncHandler(async (req, res) => {
   return successResponse(res, "Availability disabled");
 });
 
-const ALLOWED_NOTICE_HOURS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48];
-
 const getBookingSettings = asyncHandler(async (req, res) => {
   const pool = await getPool();
   const result = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
 
-  const minimumNoticeHours = result.rows[0]?.MinimumNoticeHours ?? 24;
+  const minimumNoticeHours = effectiveNoticeHours(result.rows[0]?.MinimumNoticeHours);
   return successResponse(res, "Booking settings fetched", { minimumNoticeHours });
 });
 
@@ -611,6 +687,11 @@ const listPublicAvailability = asyncHandler(async (req, res) => {
   const eventId = Number(req.params.eventId);
   const pool = await getPool();
 
+  // Slots must start MORE than the admin-chosen notice period from now and no
+  // later than the end of the 14th day from today.
+  const settings = await pool.query(`SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1`);
+  const minimumNoticeMinutes = noticeMinutes(settings.rows[0]?.MinimumNoticeHours);
+
   const result = await pool.query(
     `SELECT
         av."AvailabilityId",
@@ -631,7 +712,7 @@ const listPublicAvailability = asyncHandler(async (req, res) => {
         AND e."IsActive" = TRUE
         AND TIMESTAMP(av."AvailableDate", av."StartTime") > DATE_ADD(
           DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE),
-          INTERVAL (SELECT "MinimumNoticeHours" FROM "BookingSettings" WHERE "SettingId" = 1) HOUR
+          INTERVAL $2 MINUTE
         )
         AND av."AvailableDate" <= DATE(DATE_ADD(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 330 MINUTE), INTERVAL 14 DAY))
         AND NOT EXISTS (
@@ -641,7 +722,7 @@ const listPublicAvailability = asyncHandler(async (req, res) => {
             AND b."Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
         )
       ORDER BY av."AvailableDate", av."StartTime"`,
-    [eventId]
+    [eventId, minimumNoticeMinutes]
   );
 
   return successResponse(res, "Public availability fetched", { availability: result.rows });
@@ -654,6 +735,8 @@ module.exports = {
   createWeeklyAvailability,
   updateAvailability,
   deleteAvailability,
+  bulkDeleteAvailability,
+  bulkUpdateAvailabilityStatus,
   disableAllAvailability,
   enableAvailability,
   disableAvailability,

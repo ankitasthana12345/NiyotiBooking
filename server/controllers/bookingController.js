@@ -6,14 +6,16 @@ const {
   getBookingById,
   updateBookingStatus,
   rescheduleBooking,
+  setSlotsAllowedForBooking,
+  phoneDigitsSql,
 } = require("../services/bookingService");
 const { sendBookingNotifications } = require("../services/emailService");
 
 function mapBookingError(res, error) {
   const message = error.message || "Booking failed";
 
-  if (message.includes("upcoming appointment with this email")) {
-    return errorResponse(res, message, "DUPLICATE_BOOKING", 409);
+  if (message.includes("slots are over")) {
+    return errorResponse(res, message, "SLOTS_EXHAUSTED", 409);
   }
 
   if (message.includes("booking window")) {
@@ -49,7 +51,7 @@ function mapBookingError(res, error) {
 
 const listBookings = asyncHandler(async (req, res) => {
   const pool = await getPool();
-  const { status, email, eventId, fromDate, toDate, q } = req.query;
+  const { status, email, eventId, fromDate, toDate, q, starredOnly } = req.query;
 
   let query = `
     SELECT
@@ -62,6 +64,11 @@ const listBookings = asyncHandler(async (req, res) => {
       b."Title" AS "CustomerTitle",
       b."Gender",
       b."Profession",
+      b."SlotsAllowed",
+      (SELECT COUNT(*) FROM "Bookings" p
+        WHERE p."Status" IN ('PENDING', 'CONFIRMED', 'RESCHEDULED')
+          AND (LOWER(p."CustomerEmail") = LOWER(b."CustomerEmail")
+               OR (${phoneDigitsSql('b."PhoneNumber"')} <> '' AND ${phoneDigitsSql('p."PhoneNumber"')} = ${phoneDigitsSql('b."PhoneNumber"')}))) AS "SlotsUsed",
       b."CustomerEmail",
       b."PhoneNumber",
       b."Message",
@@ -71,6 +78,7 @@ const listBookings = asyncHandler(async (req, res) => {
       b."MeetingPlatform",
       b."MeetingLink",
       b."Status",
+      b."IsStarred",
       b."CreatedDate"
     FROM "Bookings" b
     INNER JOIN "ConsultationEvents" e ON e."EventId" = b."EventId"
@@ -82,6 +90,10 @@ const listBookings = asyncHandler(async (req, res) => {
   if (status) {
     params.push(status);
     query += ` AND b."Status" = $${params.length} `;
+  }
+
+  if (starredOnly === "true") {
+    query += ` AND b."IsStarred" = TRUE `;
   }
 
   if (email) {
@@ -113,6 +125,34 @@ const listBookings = asyncHandler(async (req, res) => {
 
   const result = await pool.query(query, params);
   return successResponse(res, "Bookings fetched", { bookings: result.rows });
+});
+
+const updateBookingSlots = asyncHandler(async (req, res) => {
+  const bookingId = Number(req.params.id);
+  const booking = await setSlotsAllowedForBooking(bookingId, Number(req.body.slots));
+
+  if (!booking) {
+    return errorResponse(res, "Booking not found", "BOOKING_NOT_FOUND", 404);
+  }
+
+  return successResponse(res, "Slots updated", { booking });
+});
+
+const setBookingStar = asyncHandler(async (req, res) => {
+  const bookingId = Number(req.params.id);
+  const isStarred = Boolean(req.body.isStarred);
+  const pool = await getPool();
+
+  const result = await pool.query(
+    `UPDATE "Bookings" SET "IsStarred" = $1, "UpdatedDate" = UTC_TIMESTAMP() WHERE "BookingId" = $2`,
+    [isStarred, bookingId]
+  );
+
+  if (result.rowCount === 0) {
+    return errorResponse(res, "Booking not found", "BOOKING_NOT_FOUND", 404);
+  }
+
+  return successResponse(res, isStarred ? "Booking starred" : "Booking unstarred", { bookingId, isStarred });
 });
 
 const getBooking = asyncHandler(async (req, res) => {
@@ -302,6 +342,8 @@ const reschedule = asyncHandler(async (req, res) => {
 module.exports = {
   listBookings,
   getBooking,
+  setBookingStar,
+  updateBookingSlots,
   createBookingByAdmin,
   createBookingByPublic,
   updateBooking,

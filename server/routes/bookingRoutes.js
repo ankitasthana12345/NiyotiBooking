@@ -3,7 +3,7 @@ const { body, param, query } = require("express-validator");
 const bookingController = require("../controllers/bookingController");
 const { requireAuth } = require("../middleware/authMiddleware");
 const { requireAdmin } = require("../middleware/adminMiddleware");
-const { TITLES, GENDERS } = require("../config/bookingOptions");
+const { TITLES, GENDERS, MIN_SLOTS, MAX_SLOTS } = require("../config/bookingOptions");
 const { validateRequest } = require("../middleware/validationMiddleware");
 
 const router = express.Router();
@@ -31,12 +31,15 @@ router.get(
     query("fromDate").optional().isISO8601(),
     query("toDate").optional().isISO8601(),
     query("q").optional().isLength({ max: 255 }),
+    query("starredOnly").optional().isBoolean(),
   ],
   validateRequest,
   bookingController.listBookings
 );
 
 router.get("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, bookingController.getBooking);
+router.patch("/:id/star", requireAuth, requireAdmin, [param("id").isInt({ min: 1 }), body("isStarred").isBoolean()], validateRequest, bookingController.setBookingStar);
+router.put("/:id/slots", requireAuth, requireAdmin, [param("id").isInt({ min: 1 }), body("slots").isInt({ min: MIN_SLOTS, max: MAX_SLOTS })], validateRequest, bookingController.updateBookingSlots);
 router.post("/", requireAuth, requireAdmin, bookingCreateValidators, validateRequest, bookingController.createBookingByAdmin);
 router.put("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 }), body("status").isIn(["PENDING", "CONFIRMED", "REJECTED", "CANCELLED", "RESCHEDULED"])], validateRequest, bookingController.updateBooking);
 router.delete("/:id", requireAuth, requireAdmin, [param("id").isInt({ min: 1 })], validateRequest, bookingController.deleteBooking);

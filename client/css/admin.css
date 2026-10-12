@@ -76,3 +76,66 @@ body {
   border-color: var(--admin-brand);
   box-shadow: 0 0 0 0.2rem rgba(245, 158, 11, 0.2);
 }
+
+/* Gmail-style bulk selection toolbar (admin-availability.html) */
+.bulk-toolbar {
+  background: #fff7ed;
+  border: 1px solid var(--admin-line);
+}
+
+.table-row-disabled {
+  opacity: 0.55;
+}
+
+.table-row-disabled td {
+  color: var(--admin-muted);
+}
+
+/* Toast + Undo, shown after a no-confirmation bulk disable/enable */
+.admin-toast-container {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 1080;
+}
+
+.admin-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #1f2937;
+  color: #fff;
+  padding: 0.6rem 1rem;
+  border-radius: 0.7rem;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+}
+
+.admin-toast #toastUndoBtn {
+  color: var(--admin-brand);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+/* Star toggle (admin-bookings.html) */
+.star-btn {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.35rem;
+}
+
+.star-btn.starred {
+  color: var(--admin-brand);
+}
+
+.star-btn:not(.starred) {
+  color: #b7bfca;
+}
+
+.star-btn:focus-visible {
+  outline: 2px solid var(--admin-brand);
+  outline-offset: 2px;
+  border-radius: 0.3rem;
+}
